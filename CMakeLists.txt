@@ -19,8 +19,9 @@ file(GLOB VFS_SRC ${CMAKE_SOURCE_DIR}/src/util/vfs/*.c)
 file(GLOB RENDERER_SRC ${CMAKE_SOURCE_DIR}/src/gba/renderers/video-software.c)
 file(GLOB THIRD_PARTY_SRC ${CMAKE_SOURCE_DIR}/src/third-party/inih/*.c)
 list(APPEND UTIL_SRC ${CMAKE_SOURCE_DIR}/src/platform/commandline.c)
+file(GLOB SIO_SRC ${CMAKE_SOURCE_DIR}/src/gba/sio/*.c)
 source_group("ARM core" FILES ${ARM_SRC})
-source_group("GBA board" FILES ${GBA_SRC} ${RENDERER_SRC})
+source_group("GBA board" FILES ${GBA_SRC} ${RENDERER_SRC} ${SIO_SRC})
 source_group("Utilities" FILES ${UTIL_SRC} ${VFS_SRC}})
 include_directories(${CMAKE_SOURCE_DIR}/src/arm)
 include_directories(${CMAKE_SOURCE_DIR}/src/gba)
@@ -210,6 +211,7 @@ add_library(${BINARY_NAME} SHARED
 	${GBA_SRC}
 	${DEBUGGER_SRC}
 	${RENDERER_SRC}
+	${SIO_SRC}
 	${UTIL_SRC}
 	${VFS_SRC}
 	${OS_SRC}
