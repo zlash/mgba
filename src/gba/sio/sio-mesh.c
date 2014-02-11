@@ -43,6 +43,11 @@ union Packet {
 	struct PacketJoin join;
 };
 
+static int GBASIOMultiMeshInit(struct GBASIODriver* driver);
+static void GBASIOMultiMeshDeinit(struct GBASIODriver* driver);
+
+static THREAD_ENTRY _networkThread(void*);
+
 int GBASIOMultiMeshCreateNode(struct GBASIOMultiMeshNode* node, int port, uint32_t bindAddress) {
 	node->threadContext = 0;
 	node->id = 0;
@@ -55,11 +60,23 @@ int GBASIOMultiMeshCreateNode(struct GBASIOMultiMeshNode* node, int port, uint32
 	node->transferValues[1] = 0xFFFF;
 	node->transferValues[2] = 0xFFFF;
 	node->transferValues[3] = 0xFFFF;
+
+	node->d.p = 0;
+	node->d.init = GBASIOMultiMeshInit;
+	node->d.deinit = GBASIOMultiMeshDeinit;
+	node->d.load = 0;
+	node->d.unload = 0;
+	node->d.writeRegister = 0;
+
 	node->mesh[0] = SocketOpenTCP(port, bindAddress);
 	if (node->mesh[0] < 0) {
 		return 0;
 	}
-	return SocketListen(node->mesh[0], 2);
+	if (SocketListen(node->mesh[0], 2)) {
+		SocketClose(node->mesh[0]);
+		return 0;
+	}
+	return 1;
 }
 
 int GBASIOMultiMeshNodeConnect(struct GBASIOMultiMeshNode* node, int port, uint32_t masterAddress) {
@@ -72,24 +89,14 @@ int GBASIOMultiMeshNodeConnect(struct GBASIOMultiMeshNode* node, int port, uint3
 
 	// Read Hello packet
 	struct PacketHello hello;
-	SocketRecv(node->mesh[0], &hello, sizeof(hello));
-	if (hello.type != PACKET_HELLO || hello.id != 0) {
-		GBALog(node->d.p->p, GBA_LOG_ERROR, "Invalid Hello packet from master");
+	int read = SocketRecv(node->mesh[0], &hello, sizeof(hello));
+	if (read < (int) sizeof(hello) || hello.type != PACKET_HELLO || hello.id >= MAX_GBAS) {
+		GBALog(node->d.p ? node->d.p->p : 0, GBA_LOG_ERROR, "Invalid Hello packet from master");
 		SocketClose(node->mesh[0]);
 		node->mesh[0] = thisSocket;
 		return 0;
 	}
-
-	// Get our information from the master
-	struct PacketJoin join;
-	SocketRecv(node->mesh[0], &join, sizeof(join));
-	if (join.id >= MAX_GBAS) {
-		GBALog(node->d.p->p, GBA_LOG_ERROR, "Invalid Join packet from master");
-		SocketClose(node->mesh[0]);
-		node->mesh[0] = thisSocket;
-		return 0;
-	}
-	node->id = join.id;
+	node->id = hello.id;
 	node->mesh[node->id] = thisSocket;
 
 	return 1;
@@ -97,6 +104,18 @@ int GBASIOMultiMeshNodeConnect(struct GBASIOMultiMeshNode* node, int port, uint3
 
 void GBASIOMultiMeshBindThread(struct GBASIOMultiMeshNode* node, struct GBAThread* threadContext) {
 	node->threadContext = threadContext;
+}
+
+int GBASIOMultiMeshInit(struct GBASIODriver* driver) {
+	struct GBASIOMultiMeshNode* node = (struct GBASIOMultiMeshNode*) driver;
+	node->active = 1;
+	return !ThreadCreate(&node->networkThread, _networkThread, node);
+}
+
+void GBASIOMultiMeshDeinit(struct GBASIODriver* driver) {
+	struct GBASIOMultiMeshNode* node = (struct GBASIOMultiMeshNode*) driver;
+	node->active = 0;
+	ThreadJoin(node->networkThread);
 }
 
 static Socket _greet(struct GBASIOMultiMeshNode* node, int port, uint32_t ipAddress) {
@@ -169,34 +188,43 @@ static Socket _select(struct GBASIOMultiMeshNode* node, int* id) {
 			maxFd = node->mesh[i];
 		}
 	}
-	Socket socket = select(maxFd + 1, &set, 0, &errorSet, 0);
-	if (socket < 0) {
+	int ready = select(maxFd + 1, &set, 0, &errorSet, 0);
+	if (!ready) {
 		return -1;
 	}
-	if (id) {
-		for (i = 0; i < MAX_GBAS; ++i) {
-			if (socket == node->mesh[i]) {
-				*id = i;
-				break;
-			}
+	for (i = 0; i < MAX_GBAS; ++i) {
+		if (FD_ISSET(node->mesh[i], &set) || FD_ISSET(node->mesh[i], &errorSet)) {
+			*id = i;
+			return node->mesh[i];
 		}
 	}
-	return socket;
+	return -1;
 }
 
-static void _processPackets(struct GBASIOMultiMeshNode* node) {
-	while (1) {
+static THREAD_ENTRY _networkThread(void* context) {
+	struct GBASIOMultiMeshNode* node = context;
+	while (node->active) {
 		int id;
 		Socket socket = _select(node, &id);
 		union Packet packet;
+		if (socket < 0) {
+			break;
+		}
 		if (id == node->id) {
 			Socket stranger = SocketAccept(socket, 0, 0);
 			struct PacketHello hello;
-			SocketRecv(stranger, &hello, sizeof(hello));
-			if (hello.type != PACKET_HELLO || hello.id >= MAX_GBAS || node->mesh[hello.id] != -1) {
-				GBALog(node->d.p->p, GBA_LOG_ERROR, "Invalid Hello packet");
-				SocketClose(stranger);
-				continue;
+			if (node->id) {
+				SocketRecv(stranger, &hello, sizeof(hello));
+				if (hello.type != PACKET_HELLO || hello.id >= MAX_GBAS || node->mesh[hello.id] != -1) {
+					GBALog(node->d.p->p, GBA_LOG_ERROR, "Invalid Hello packet");
+					SocketClose(stranger);
+					continue;
+				}
+			} else {
+				hello.type = PACKET_HELLO;
+				hello.id = node->connected;
+				++node->connected;
+				SocketSend(stranger, &hello, sizeof(hello));
 			}
 			node->mesh[hello.id] = stranger;
 		} else {
@@ -229,4 +257,5 @@ static void _processPackets(struct GBASIOMultiMeshNode* node) {
 			}
 		}
 	}
+	return 0;
 }

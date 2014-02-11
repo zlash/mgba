@@ -4,6 +4,7 @@
 #include "gba-sio.h"
 
 #include "util/socket.h"
+#include "util/threading.h"
 
 #define MAX_GBAS 4
 
@@ -11,6 +12,8 @@ struct GBASIOMultiMeshNode {
 	struct GBASIODriver d;
 
 	struct GBAThread* threadContext;
+	Thread networkThread;
+	int active;
 
 	int id;
 	int connected;
