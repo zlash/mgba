@@ -209,11 +209,7 @@ static Socket _select(struct GBASIOMultiMeshNode* node, int* id) {
 		if (node->mesh[i] < 0) {
 			continue;
 		}
-		if (FD_ISSET(node->mesh[i], &errorSet)) {
-			SocketClose(node->mesh[i]);
-			node->mesh[i] = -1;
-		}
-		if (FD_ISSET(node->mesh[i], &set)) {
+		if (FD_ISSET(node->mesh[i], &set) || FD_ISSET(node->mesh[i], &errorSet)) {
 			*id = i;
 			return node->mesh[i];
 		}
@@ -253,7 +249,12 @@ static THREAD_ENTRY _networkThread(void* context) {
 			++node->connected;
 			node->mesh[hello.id] = stranger;
 		} else {
-			SocketRecv(socket, &packet, 1);
+			if (SocketRecv(socket, &packet, 1) < 1) {
+				SocketClose(node->mesh[id]);
+				node->mesh[id] = -1;
+				// TODO: Reconfigure mesh
+				continue;
+			}
 			switch(packet.type) {
 			case PACKET_JOIN: {
 				uint32_t ipAddress;
