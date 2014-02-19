@@ -31,7 +31,7 @@ struct PacketJoin {
 	uint8_t type; // 0x02
 	uint8_t id;
 	uint16_t port;
-	uint8_t ipVersion;
+	uint32_t ipVersion;
 };
 
 union Packet {
@@ -60,6 +60,8 @@ int GBASIOMultiMeshCreateNode(struct GBASIOMultiMeshNode* node, int port, uint32
 	node->transferValues[1] = 0xFFFF;
 	node->transferValues[2] = 0xFFFF;
 	node->transferValues[3] = 0xFFFF;
+	node->port = port;
+	node->publicAddress[0] = bindAddress;
 
 	node->d.p = 0;
 	node->d.init = GBASIOMultiMeshInit;
@@ -79,8 +81,11 @@ int GBASIOMultiMeshCreateNode(struct GBASIOMultiMeshNode* node, int port, uint32
 	return 1;
 }
 
-int GBASIOMultiMeshNodeConnect(struct GBASIOMultiMeshNode* node, int port, uint32_t masterAddress) {
+int GBASIOMultiMeshNodeConnect(struct GBASIOMultiMeshNode* node, int port, uint32_t masterAddress, uint32_t publicAddress) {
 	Socket thisSocket = node->mesh[0];
+	if (publicAddress) {
+		node->publicAddress[0] = publicAddress;
+	}
 	node->mesh[0] = SocketConnectTCP(port, masterAddress);
 	if (node->mesh[0] < 0) {
 		node->mesh[0] = thisSocket;
@@ -98,6 +103,16 @@ int GBASIOMultiMeshNodeConnect(struct GBASIOMultiMeshNode* node, int port, uint3
 	}
 	node->id = hello.id;
 	node->mesh[node->id] = thisSocket;
+
+	// Tell the server about me
+	struct PacketJoin join = {
+		.type = PACKET_JOIN,
+		.id = hello.id,
+		.port = node->port,
+		.ipVersion = 4 // TODO: Support IPv6
+	};
+	SocketSend(node->mesh[0], &join, sizeof(join));
+	SocketSend(node->mesh[0], node->publicAddress, 4);
 
 	return 1;
 }
@@ -140,10 +155,8 @@ static int  _readIPAddress(Socket socket, int ipVersion, void* ipAddress, int ip
 	int excessRead = 0;
 	switch (ipVersion) {
 	case 4:
-		toRead = 4;
-		break;
-	case 6:
-		toRead = 16;
+	case 16:
+		toRead = ipVersion;
 		break;
 	default:
 		return -1;
@@ -193,7 +206,14 @@ static Socket _select(struct GBASIOMultiMeshNode* node, int* id) {
 		return -1;
 	}
 	for (i = 0; i < MAX_GBAS; ++i) {
-		if (FD_ISSET(node->mesh[i], &set) || FD_ISSET(node->mesh[i], &errorSet)) {
+		if (node->mesh[i] < 0) {
+			continue;
+		}
+		if (FD_ISSET(node->mesh[i], &errorSet)) {
+			SocketClose(node->mesh[i]);
+			node->mesh[i] = -1;
+		}
+		if (FD_ISSET(node->mesh[i], &set)) {
 			*id = i;
 			return node->mesh[i];
 		}
@@ -211,7 +231,12 @@ static THREAD_ENTRY _networkThread(void* context) {
 			break;
 		}
 		if (id == node->id) {
+			// Process incoming connections
 			Socket stranger = SocketAccept(socket, 0, 0);
+			if (stranger < 0) {
+				GBALog(node->d.p->p, GBA_LOG_ERROR, "Failed connection");
+				continue;
+			}
 			struct PacketHello hello;
 			if (node->id) {
 				SocketRecv(stranger, &hello, sizeof(hello));
@@ -223,9 +248,9 @@ static THREAD_ENTRY _networkThread(void* context) {
 			} else {
 				hello.type = PACKET_HELLO;
 				hello.id = node->connected;
-				++node->connected;
 				SocketSend(stranger, &hello, sizeof(hello));
 			}
+			++node->connected;
 			node->mesh[hello.id] = stranger;
 		} else {
 			SocketRecv(socket, &packet, 1);
@@ -235,20 +260,36 @@ static THREAD_ENTRY _networkThread(void* context) {
 				// TODO: Check the return values of these
 				SocketRecv(socket, &packet.data, sizeof(struct PacketJoin) - 1);
 				_readIPAddress(socket, packet.join.ipVersion, &ipAddress, sizeof(ipAddress));
-				if (id != 0) {
-					// Ignore Join packets from sources other than master
-					GBALog(node->d.p->p, GBA_LOG_ERROR, "Invalid Join packet sender");
-					break;
+				if (node->id) {
+					if (id != 0) {
+						// Ignore Join packets from sources other than master
+						GBALog(node->d.p->p, GBA_LOG_ERROR, "Invalid Join packet sender");
+						break;
+					}
+					if (packet.join.id >= MAX_GBAS) {
+						GBALog(node->d.p->p, GBA_LOG_ERROR, "Invalid Join packet");
+						break;
+					}
+					if (node->mesh[packet.join.id] >= 0) {
+						GBALog(node->d.p->p, GBA_LOG_ERROR, "Redundant Join packet");
+						break;
+					}
+					node->mesh[packet.join.id] = _greet(node, packet.join.port, ipAddress);
+				} else {
+					// Broadcast the join packet we get from the client
+					if (id != packet.join.id) {
+						GBALog(node->d.p->p, GBA_LOG_ERROR, "Invalid Join packet");
+						break;
+					}
+					int i;
+					for (i = 1; i < node->connected; ++i) {
+						if (i == id) {
+							continue;
+						}
+						SocketSend(node->mesh[i], &packet, sizeof(struct PacketJoin));
+						SocketSend(node->mesh[i], &ipAddress, sizeof(ipAddress));
+					}
 				}
-				if (packet.join.id >= MAX_GBAS) {
-					GBALog(node->d.p->p, GBA_LOG_ERROR, "Invalid Join packet");
-					break;
-				}
-				if (node->mesh[packet.join.id] >= 0) {
-					GBALog(node->d.p->p, GBA_LOG_ERROR, "Redundant Join packet");
-					break;
-				}
-				node->mesh[packet.join.id] = _greet(node, packet.join.port, ipAddress);
 				break;
 			}
 			default:
