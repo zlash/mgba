@@ -21,6 +21,19 @@ struct GBASIOMultiMeshNode {
 	int connected;
 	Socket mesh[MAX_GBAS];
 
+	union {
+		struct {
+			unsigned : 2;
+			unsigned slave : 1;
+			unsigned ready : 1;
+			unsigned id : 2;
+			unsigned error : 1;
+			unsigned busy : 1;
+			unsigned : 8;
+		};
+		uint16_t packed;
+	} siocnt;
+
 	int transferActive;
 	uint16_t transferValues[MAX_GBAS];
 };

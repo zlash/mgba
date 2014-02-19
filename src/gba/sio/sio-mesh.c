@@ -1,6 +1,7 @@
 #include "sio-mesh.h"
 
 #include "gba.h"
+#include "gba-io.h"
 
 /* GBA Mesh protocol
  * =================
@@ -34,6 +35,17 @@ struct PacketJoin {
 	uint32_t ipVersion;
 };
 
+struct PacketTransferStart {
+	uint8_t type; // 0x10
+	uint8_t reserved;
+};
+
+struct PacketTransferData {
+	uint8_t type; // 0x11
+	uint8_t id;
+	uint16_t data;
+};
+
 union Packet {
 	struct {
 		uint8_t type;
@@ -41,12 +53,18 @@ union Packet {
 	};
 	struct PacketHello hello;
 	struct PacketJoin join;
+	struct PacketTransferStart transferStart;
+	struct PacketTransferData transferData;
 };
 
 static int GBASIOMultiMeshInit(struct GBASIODriver* driver);
 static void GBASIOMultiMeshDeinit(struct GBASIODriver* driver);
+static int GBASIOMultiMeshLoad(struct GBASIODriver* driver);
+static int GBASIOMultiMeshWriteRegister(struct GBASIODriver* driver, uint32_t address, uint16_t value);
 
 static THREAD_ENTRY _networkThread(void*);
+static void _startTransfer(struct GBASIOMultiMeshNode* node);
+static void _siocntSync(struct GBASIOMultiMeshNode* node);
 
 int GBASIOMultiMeshCreateNode(struct GBASIOMultiMeshNode* node, int port, uint32_t bindAddress) {
 	node->threadContext = 0;
@@ -60,15 +78,18 @@ int GBASIOMultiMeshCreateNode(struct GBASIOMultiMeshNode* node, int port, uint32
 	node->transferValues[1] = 0xFFFF;
 	node->transferValues[2] = 0xFFFF;
 	node->transferValues[3] = 0xFFFF;
+	node->siocnt.packed = 0;
+
 	node->port = port;
 	node->publicAddress[0] = bindAddress;
 
 	node->d.p = 0;
 	node->d.init = GBASIOMultiMeshInit;
 	node->d.deinit = GBASIOMultiMeshDeinit;
-	node->d.load = 0;
+	node->d.load = GBASIOMultiMeshLoad;
 	node->d.unload = 0;
-	node->d.writeRegister = 0;
+	node->d.writeRegister = GBASIOMultiMeshWriteRegister;
+	node->d.processEvents = 0;
 
 	node->mesh[0] = SocketOpenTCP(port, bindAddress);
 	if (node->mesh[0] < 0) {
@@ -131,6 +152,71 @@ void GBASIOMultiMeshDeinit(struct GBASIODriver* driver) {
 	struct GBASIOMultiMeshNode* node = (struct GBASIOMultiMeshNode*) driver;
 	node->active = 0;
 	ThreadJoin(node->networkThread);
+}
+
+int GBASIOMultiMeshLoad(struct GBASIODriver* driver) {
+	struct GBASIOMultiMeshNode* node = (struct GBASIOMultiMeshNode*) driver;
+	_siocntSync(node);
+	return 1;
+}
+
+int GBASIOMultiMeshWriteRegister(struct GBASIODriver* driver, uint32_t address, uint16_t value) {
+	struct GBASIOMultiMeshNode* node = (struct GBASIOMultiMeshNode*) driver;
+	if (address == REG_SIOCNT) {
+		if (value & 0x0080) {
+			if (!node->id) {
+				_startTransfer(node);
+			} else {
+				value &= ~0x0080;
+				value |= driver->p->siocnt & 0x0080;
+			}
+		}
+		value &= 0xFF03;
+		value |= driver->p->siocnt & 0x00F8;
+	}
+	return value;
+}
+
+static void _setupTransfer(struct GBASIOMultiMeshNode* node) {
+	node->transferActive = (1 << node->connected) - 1;
+	node->transferValues[0] = 0xFFFF;
+	node->transferValues[1] = 0xFFFF;
+	node->transferValues[2] = 0xFFFF;
+	node->transferValues[3] = 0xFFFF;
+	node->transferValues[node->id] = node->d.p->p->memory.io[REG_SIOMLT_SEND >> 1];
+	node->d.p->p->memory.io[REG_SIOMULTI0 >> 1] = 0xFFFF;
+	node->d.p->p->memory.io[REG_SIOMULTI1 >> 1] = 0xFFFF;
+	node->d.p->p->memory.io[REG_SIOMULTI2 >> 1] = 0xFFFF;
+	node->d.p->p->memory.io[REG_SIOMULTI3 >> 1] = 0xFFFF;
+}
+
+static void _startTransfer(struct GBASIOMultiMeshNode* node) {
+	if (!node || node->id) {
+		GBALog(node->d.p->p, GBA_LOG_ERROR, "Slave attempting to commence transfer");
+		return;
+	}
+	int i;
+	struct PacketTransferStart transfer = { .type = PACKET_TRANSFER_START };
+	struct PacketTransferData data = {
+		.type = PACKET_TRANSFER_DATA,
+		.id = 0,
+		.data = node->d.p->p->memory.io[REG_SIOMLT_SEND >> 1]
+	};
+	_setupTransfer(node);
+	for (i = 1; i < node->connected; ++i) {
+		if (node->mesh[i] < 0) {
+			continue;
+		}
+		SocketSend(node->mesh[i], &transfer, sizeof(transfer));
+		SocketSend(node->mesh[i], &data, sizeof(data));
+	}
+}
+
+static void _siocntSync(struct GBASIOMultiMeshNode* node) {
+	if (node->d.p->activeDriver == &node->d && node->d.p->mode == SIO_MULTI) {
+		node->d.p->siocnt &= 0xFF03;
+		node->d.p->siocnt |= node->siocnt.packed;
+	}
 }
 
 static Socket _greet(struct GBASIOMultiMeshNode* node, int port, uint32_t ipAddress) {
@@ -245,6 +331,9 @@ static THREAD_ENTRY _networkThread(void* context) {
 				hello.type = PACKET_HELLO;
 				hello.id = node->connected;
 				SocketSend(stranger, &hello, sizeof(hello));
+				node->siocnt.slave = 0;
+				node->siocnt.ready = 1;
+				_siocntSync(node);
 			}
 			++node->connected;
 			node->mesh[hello.id] = stranger;
@@ -292,6 +381,52 @@ static THREAD_ENTRY _networkThread(void* context) {
 					}
 				}
 				break;
+			}
+			case PACKET_TRANSFER_START: {
+				if (id) {
+					GBALog(node->d.p->p, GBA_LOG_ERROR, "Invalid transfer start");
+					continue;
+				}
+				// FIXME: Don't do this only when a transfer starts
+				node->siocnt.slave = 1;
+				node->siocnt.ready = 1;
+				_siocntSync(node);
+				_setupTransfer(node);
+				int i;
+				struct PacketTransferData data = {
+					.type = PACKET_TRANSFER_DATA,
+					.id = node->id,
+					.data =  node->d.p->p->memory.io[REG_SIOMLT_SEND >> 1]
+				};
+				for (i = 0; i < node->connected; ++i) {
+					if (node->id == i || node->mesh[i] < 0) {
+						continue;
+					}
+					SocketSend(node->mesh[i], &data, sizeof(data));
+				}
+				break;
+			}
+			case PACKET_TRANSFER_DATA: {
+				SocketRecv(socket, &packet.data, sizeof(struct PacketTransferData) - 1);
+				if (packet.transferData.id != id) {
+					GBALog(node->d.p->p, GBA_LOG_ERROR, "Invalid transfer sender");
+					continue;
+				}
+				node->transferValues[id] = packet.transferData.data;
+				node->transferActive &= ~(1 << id);
+				// TODO: Increase out-of-order robustness
+				if (!node->transferActive) {
+					node->siocnt.id = node->id;
+					node->siocnt.busy = 0;
+					_siocntSync(node);
+					node->d.p->p->memory.io[REG_SIOMULTI0 >> 1] = node->transferValues[0];
+					node->d.p->p->memory.io[REG_SIOMULTI1 >> 1] = node->transferValues[1];
+					node->d.p->p->memory.io[REG_SIOMULTI2 >> 1] = node->transferValues[2];
+					node->d.p->p->memory.io[REG_SIOMULTI3 >> 1] = node->transferValues[3];
+					if (node->d.p->multiplayerControl.irq) {
+						GBARaiseIRQ(node->d.p->p, IRQ_SIO);
+					}
+				}
 			}
 			default:
 				// TODO
