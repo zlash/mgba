@@ -8,6 +8,16 @@
 
 #define MAX_GBAS 4
 
+enum TransferState {
+	// Set in network thread
+	TRANSFER_IDLE = 0,
+	TRANSFER_FINISHED,
+
+	// Handled in network thread
+	TRANSFER_PENDING,
+	TRANSFER_ACTIVE
+};
+
 struct GBASIOMultiMeshNode {
 	struct GBASIODriver d;
 
@@ -19,11 +29,12 @@ struct GBASIOMultiMeshNode {
 
 	int id;
 	int connected;
+	int32_t nextEvent;
 	Socket mesh[MAX_GBAS];
 
 	union {
 		struct {
-			unsigned : 2;
+			unsigned baud : 2;
 			unsigned slave : 1;
 			unsigned ready : 1;
 			unsigned id : 2;
@@ -36,9 +47,11 @@ struct GBASIOMultiMeshNode {
 
 	int transferActive;
 	uint16_t transferValues[MAX_GBAS];
-	int transferFinished;
+	enum TransferState transferState;
 
 	Mutex lock;
+	Condition dataSendCond;
+	Condition dataRecvCond;
 };
 
 // TODO: IPv6 support
