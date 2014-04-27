@@ -231,6 +231,7 @@ static void _startTransfer(struct GBASIOMultiMeshNode* node) {
 		SocketSend(node->mesh[i], &transfer, sizeof(transfer));
 		SocketSend(node->mesh[i], &data, sizeof(data));
 	}
+	node->transferActive &= ~1;
 }
 
 static void _siocntSync(struct GBASIOMultiMeshNode* node) {
@@ -404,6 +405,7 @@ static THREAD_ENTRY _networkThread(void* context) {
 				break;
 			}
 			case PACKET_TRANSFER_START: {
+				SocketRecv(socket, &packet.data, sizeof(struct PacketTransferStart) - 1);
 				if (id) {
 					GBALog(node->d.p->p, GBA_LOG_ERROR, "Invalid transfer start");
 					continue;
@@ -425,6 +427,7 @@ static THREAD_ENTRY _networkThread(void* context) {
 					}
 					SocketSend(node->mesh[i], &data, sizeof(data));
 				}
+				node->transferActive &= ~(1 << node->id);
 				break;
 			}
 			case PACKET_TRANSFER_DATA: {
@@ -445,7 +448,7 @@ static THREAD_ENTRY _networkThread(void* context) {
 				break;
 			}
 			default:
-				// TODO
+				GBALog(node->d.p->p, GBA_LOG_ERROR, "Invalid packet type: %x", packet.type);
 				break;
 			}
 		}
