@@ -36,6 +36,9 @@ struct GBASIOMultiMeshNode {
 
 	int transferActive;
 	uint16_t transferValues[MAX_GBAS];
+	int transferFinished;
+
+	Mutex lock;
 };
 
 // TODO: IPv6 support

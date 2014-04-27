@@ -61,12 +61,15 @@ static int GBASIOMultiMeshInit(struct GBASIODriver* driver);
 static void GBASIOMultiMeshDeinit(struct GBASIODriver* driver);
 static int GBASIOMultiMeshLoad(struct GBASIODriver* driver);
 static int GBASIOMultiMeshWriteRegister(struct GBASIODriver* driver, uint32_t address, uint16_t value);
+static int32_t GBASIOMultiMeshProcessEvents(struct GBASIODriver* driver, int32_t cycles);
 
 static THREAD_ENTRY _networkThread(void*);
 static void _startTransfer(struct GBASIOMultiMeshNode* node);
 static void _siocntSync(struct GBASIOMultiMeshNode* node);
+static void _postUpdate(struct GBASIOMultiMeshNode* node);
 
 int GBASIOMultiMeshCreateNode(struct GBASIOMultiMeshNode* node, int port, uint32_t bindAddress) {
+	MutexInit(&node->lock);
 	node->threadContext = 0;
 	node->id = 0;
 	node->connected = 1;
@@ -89,7 +92,7 @@ int GBASIOMultiMeshCreateNode(struct GBASIOMultiMeshNode* node, int port, uint32
 	node->d.load = GBASIOMultiMeshLoad;
 	node->d.unload = 0;
 	node->d.writeRegister = GBASIOMultiMeshWriteRegister;
-	node->d.processEvents = 0;
+	node->d.processEvents = GBASIOMultiMeshProcessEvents;
 
 	node->mesh[0] = SocketOpenTCP(port, bindAddress);
 	if (node->mesh[0] < 0) {
@@ -152,6 +155,7 @@ void GBASIOMultiMeshDeinit(struct GBASIODriver* driver) {
 	struct GBASIOMultiMeshNode* node = (struct GBASIOMultiMeshNode*) driver;
 	node->active = 0;
 	ThreadJoin(node->networkThread);
+	MutexDeinit(&node->lock);
 }
 
 int GBASIOMultiMeshLoad(struct GBASIODriver* driver) {
@@ -175,6 +179,23 @@ int GBASIOMultiMeshWriteRegister(struct GBASIODriver* driver, uint32_t address, 
 		value |= driver->p->siocnt & 0x00F8;
 	}
 	return value;
+}
+
+int32_t GBASIOMultiMeshProcessEvents(struct GBASIODriver* driver, int32_t cycles) {
+	struct GBASIOMultiMeshNode* node = (struct GBASIOMultiMeshNode*) driver;
+	if (node->transferFinished) {
+		MutexLock(&node->lock);
+		node->d.p->p->memory.io[REG_SIOMULTI0 >> 1] = node->transferValues[0];
+		node->d.p->p->memory.io[REG_SIOMULTI1 >> 1] = node->transferValues[1];
+		node->d.p->p->memory.io[REG_SIOMULTI2 >> 1] = node->transferValues[2];
+		node->d.p->p->memory.io[REG_SIOMULTI3 >> 1] = node->transferValues[3];
+		if (node->d.p->multiplayerControl.irq) {
+			GBARaiseIRQ(node->d.p->p, IRQ_SIO);
+		}
+		node->transferFinished = 0;
+		MutexUnlock(&node->lock);
+	}
+	return INT_MAX;
 }
 
 static void _setupTransfer(struct GBASIOMultiMeshNode* node) {
@@ -419,14 +440,9 @@ static THREAD_ENTRY _networkThread(void* context) {
 					node->siocnt.id = node->id;
 					node->siocnt.busy = 0;
 					_siocntSync(node);
-					node->d.p->p->memory.io[REG_SIOMULTI0 >> 1] = node->transferValues[0];
-					node->d.p->p->memory.io[REG_SIOMULTI1 >> 1] = node->transferValues[1];
-					node->d.p->p->memory.io[REG_SIOMULTI2 >> 1] = node->transferValues[2];
-					node->d.p->p->memory.io[REG_SIOMULTI3 >> 1] = node->transferValues[3];
-					if (node->d.p->multiplayerControl.irq) {
-						GBARaiseIRQ(node->d.p->p, IRQ_SIO);
-					}
+					_postUpdate(node);
 				}
+				break;
 			}
 			default:
 				// TODO
@@ -435,4 +451,10 @@ static THREAD_ENTRY _networkThread(void* context) {
 		}
 	}
 	return 0;
+}
+
+void _postUpdate(struct GBASIOMultiMeshNode* node) {
+	MutexLock(&node->lock);
+	node->transferFinished = 1;
+	MutexUnlock(&node->lock);
 }
