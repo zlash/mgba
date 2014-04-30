@@ -21,6 +21,9 @@ enum {
 	RCNT_INITIAL = 0x8000
 };
 
+// [baud][gbas]
+const int GBASIOCyclesPerTransfer[4][4];
+
 struct GBASIO;
 
 struct GBASIODriver {

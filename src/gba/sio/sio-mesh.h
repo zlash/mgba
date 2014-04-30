@@ -8,20 +8,25 @@
 
 #define MAX_GBAS 4
 
+// State transitions:
+// IDLE ------> PENDING (GBA thread)
+// PENDING ---> GOT_START (Network thread)
+// GOT_START -> SENT_DATA (GBA thread)
+// SENT_DATA -> FINISHED (Network thread)
+// FINISHED --> IDLE (GBA thread)
 enum TransferState {
 	// Set in network thread
 	TRANSFER_IDLE = 0,
-	TRANSFER_FINISHED,
-
-	// Handled in network thread
 	TRANSFER_PENDING,
-	TRANSFER_ACTIVE
+	TRANSFER_GOT_START,
+	TRANSFER_SENT_DATA,
+	TRANSFER_FINISHED,
+	TRANSFER_DEAD = -1
 };
 
 struct GBASIOMultiMeshNode {
 	struct GBASIODriver d;
 
-	struct GBAThread* threadContext;
 	Thread networkThread;
 	int active;
 	int port;
@@ -29,12 +34,11 @@ struct GBASIOMultiMeshNode {
 
 	int id;
 	int connected;
-	int32_t nextEvent;
 	Socket mesh[MAX_GBAS];
 
 	union {
 		struct {
-			unsigned baud : 2;
+			unsigned : 2;
 			unsigned slave : 1;
 			unsigned ready : 1;
 			unsigned id : 2;
@@ -47,16 +51,20 @@ struct GBASIOMultiMeshNode {
 
 	int transferActive;
 	uint16_t transferValues[MAX_GBAS];
+	int32_t transferTime;
+
+	// These must be protected by the mutex
+	int32_t nextEvent;
+	int32_t linkCycles;
 	enum TransferState transferState;
 
 	Mutex lock;
-	Condition dataSendCond;
-	Condition dataRecvCond;
+	Condition dataGBACond;
+	Condition dataNetworkCond;
 };
 
 // TODO: IPv6 support
 int GBASIOMultiMeshCreateNode(struct GBASIOMultiMeshNode* node, int port, uint32_t bindAddress);
 int GBASIOMultiMeshNodeConnect(struct GBASIOMultiMeshNode* node, int port, uint32_t masterAddress, uint32_t publicAddress);
-void GBASIOMultiMeshBindThread(struct GBASIOMultiMeshNode* node, struct GBAThread* threadContext);
 
 #endif

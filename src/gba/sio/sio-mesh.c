@@ -26,6 +26,7 @@ enum PacketType {
 struct PacketHello {
 	uint8_t type; // 0x01
 	uint8_t id;
+	uint32_t sync;
 };
 
 struct PacketJoin {
@@ -38,6 +39,7 @@ struct PacketJoin {
 struct PacketTransferStart {
 	uint8_t type; // 0x10
 	uint8_t reserved;
+	uint32_t sync;
 };
 
 struct PacketTransferData {
@@ -65,24 +67,22 @@ static int32_t GBASIOMultiMeshProcessEvents(struct GBASIODriver* driver, int32_t
 
 static THREAD_ENTRY _networkThread(void*);
 static void _startTransfer(struct GBASIOMultiMeshNode* node);
+static void _setupTransfer(struct GBASIOMultiMeshNode* node);
+static void _doTransfer(struct GBASIOMultiMeshNode* node);
+static void _finishTransfer(struct GBASIOMultiMeshNode* node);
 static void _siocntSync(struct GBASIOMultiMeshNode* node);
 
 int GBASIOMultiMeshCreateNode(struct GBASIOMultiMeshNode* node, int port, uint32_t bindAddress) {
 	MutexInit(&node->lock);
-	ConditionInit(&node->dataSendCond);
-	ConditionInit(&node->dataRecvCond);
-	node->threadContext = 0;
+	ConditionInit(&node->dataGBACond);
+	ConditionInit(&node->dataNetworkCond);
 	node->id = 0;
 	node->connected = 1;
+	node->nextEvent = INT_MAX;
+	node->linkCycles = 0;
 	node->mesh[1] = INVALID_SOCKET;
 	node->mesh[2] = INVALID_SOCKET;
 	node->mesh[3] = INVALID_SOCKET;
-	node->transferActive = 0;
-	node->transferState = TRANSFER_IDLE;
-	node->transferValues[0] = 0xFFFF;
-	node->transferValues[1] = 0xFFFF;
-	node->transferValues[2] = 0xFFFF;
-	node->transferValues[3] = 0xFFFF;
 	node->siocnt.packed = 0;
 
 	node->port = port;
@@ -122,13 +122,16 @@ int GBASIOMultiMeshNodeConnect(struct GBASIOMultiMeshNode* node, int port, uint3
 	return 1;
 }
 
-void GBASIOMultiMeshBindThread(struct GBASIOMultiMeshNode* node, struct GBAThread* threadContext) {
-	node->threadContext = threadContext;
-}
-
 int GBASIOMultiMeshInit(struct GBASIODriver* driver) {
 	struct GBASIOMultiMeshNode* node = (struct GBASIOMultiMeshNode*) driver;
 	node->active = 1;
+	node->transferActive = 0;
+	node->transferState = TRANSFER_IDLE;
+	node->transferValues[0] = 0xFFFF;
+	node->transferValues[1] = 0xFFFF;
+	node->transferValues[2] = 0xFFFF;
+	node->transferValues[3] = 0xFFFF;
+	node->transferTime = 0;
 	return !ThreadCreate(&node->networkThread, _networkThread, node);
 }
 
@@ -150,17 +153,13 @@ int GBASIOMultiMeshWriteRegister(struct GBASIODriver* driver, uint32_t address, 
 		if (value & 0x0080) {
 			if (!node->id) {
 				MutexLock(&node->lock);
-				if (node->transferState > TRANSFER_IDLE) {
-					ConditionWait(&node->dataRecvCond, &node->lock);
-					MutexUnlock(&node->lock);
-				} else if (node->transferState == TRANSFER_FINISHED) {
-					GBALog(node->d.p->p, GBA_LOG_ERROR, "Tried to start transfer while before reading results of last transfer");
-					MutexUnlock(&node->lock);
-				} else {
-					node->transferState = TRANSFER_PENDING;
-					ConditionWake(&node->dataSendCond);
-					MutexUnlock(&node->lock);
+				if (node->transferState != TRANSFER_IDLE) {
+					GBALog(node->d.p->p, GBA_LOG_ERROR, "Transfer backed up");
 				}
+				_setupTransfer(node);
+				node->transferState = TRANSFER_PENDING;
+				ConditionWake(&node->dataGBACond);
+				MutexUnlock(&node->lock);
 			} else {
 				GBALog(node->d.p->p, GBA_LOG_ERROR, "Slave attempting to commence transfer");
 				value &= ~0x0080;
@@ -175,75 +174,97 @@ int GBASIOMultiMeshWriteRegister(struct GBASIODriver* driver, uint32_t address, 
 
 int32_t GBASIOMultiMeshProcessEvents(struct GBASIODriver* driver, int32_t cycles) {
 	struct GBASIOMultiMeshNode* node = (struct GBASIOMultiMeshNode*) driver;
+	MutexLock(&node->lock);
+	node->linkCycles += cycles;
 	if (node->nextEvent != INT_MAX) {
-		MutexLock(&node->lock);
 		node->nextEvent -= cycles;
 		if (node->nextEvent <= 0) {
-			if (node->transferState == TRANSFER_FINISHED) {
-				node->transferValues[node->id] = node->d.p->p->memory.io[REG_SIOMLT_SEND >> 1];
-				node->d.p->p->memory.io[REG_SIOMULTI0 >> 1] = node->transferValues[0];
-				node->d.p->p->memory.io[REG_SIOMULTI1 >> 1] = node->transferValues[1];
-				node->d.p->p->memory.io[REG_SIOMULTI2 >> 1] = node->transferValues[2];
-				node->d.p->p->memory.io[REG_SIOMULTI3 >> 1] = node->transferValues[3];
-				node->transferState = TRANSFER_IDLE;
-				node->nextEvent = INT_MAX;
-				ConditionWake(&node->dataSendCond);
-				MutexUnlock(&node->lock);
-				GBALog(node->d.p->p, GBA_LOG_DEBUG, "Current values: %04X %04X %04X %04X", node->d.p->p->memory.io[REG_SIOMULTI0 >> 1], node->d.p->p->memory.io[REG_SIOMULTI1 >> 1], node->d.p->p->memory.io[REG_SIOMULTI2 >> 1], node->d.p->p->memory.io[REG_SIOMULTI3 >> 1]);
-				if (node->d.p->multiplayerControl.irq) {
-					GBARaiseIRQ(node->d.p->p, IRQ_SIO);
-				}
-			} else if (node->transferState >= TRANSFER_PENDING) {
-				node->nextEvent = 64;
-				ConditionWait(&node->dataRecvCond, &node->lock);
-				MutexUnlock(&node->lock);
-			} else {
-				node->nextEvent = INT_MAX;
-				MutexUnlock(&node->lock);
+			while (node->transferState == TRANSFER_PENDING) {
+				ConditionWait(&node->dataNetworkCond, &node->lock);
 			}
-		} else {
-			MutexUnlock(&node->lock);
+			if (node->transferState == TRANSFER_GOT_START) {
+				_setupTransfer(node);
+				node->nextEvent -= node->linkCycles;
+				node->transferState = TRANSFER_SENT_DATA;
+				ConditionWake(&node->dataGBACond);
+			} else {
+				while (node->transferState == TRANSFER_SENT_DATA) {
+					ConditionWait(&node->dataNetworkCond, &node->lock);
+				}
+				if (node->transferState != TRANSFER_FINISHED) {
+					GBALog(node->d.p->p, GBA_LOG_ERROR, "SIO entered bad state");
+					node->nextEvent = 32;
+				}
+			}
+			if (node->transferState == TRANSFER_FINISHED) {
+				_finishTransfer(node);
+				node->nextEvent = INT_MAX;
+			}
 		}
 	}
+	MutexUnlock(&node->lock);
 	return node->nextEvent;
 }
 
 static void _setupTransfer(struct GBASIOMultiMeshNode* node) {
 	node->transferActive = (1 << node->connected) - 1;
+	node->transferActive &= ~(1 << node->id);
 	node->transferValues[0] = 0xFFFF;
 	node->transferValues[1] = 0xFFFF;
 	node->transferValues[2] = 0xFFFF;
 	node->transferValues[3] = 0xFFFF;
-	node->d.p->p->memory.io[REG_SIOMULTI0 >> 1] = 0xFFFF;
-	node->d.p->p->memory.io[REG_SIOMULTI1 >> 1] = 0xFFFF;
-	node->d.p->p->memory.io[REG_SIOMULTI2 >> 1] = 0xFFFF;
-	node->d.p->p->memory.io[REG_SIOMULTI3 >> 1] = 0xFFFF;
+	node->transferTime = GBASIOCyclesPerTransfer[node->d.p->multiplayerControl.baud][node->connected - 1];
+	node->nextEvent = node->transferTime;
 }
 
 static void _startTransfer(struct GBASIOMultiMeshNode* node) {
 	int i;
-	struct PacketTransferStart transfer = { .type = PACKET_TRANSFER_START };
-	struct PacketTransferData data = {
-		.type = PACKET_TRANSFER_DATA,
-		.id = 0,
-		.data = node->d.p->p->memory.io[REG_SIOMLT_SEND >> 1]
+	struct PacketTransferStart transfer = {
+		.type = PACKET_TRANSFER_START,
+		.sync = node->linkCycles
 	};
-	GBALog(node->d.p->p, GBA_LOG_DEBUG, "Begin sending SIO: %04X", data.data);
-	_setupTransfer(node);
 	for (i = 1; i < node->connected; ++i) {
 		if (SOCKET_FAILED(node->mesh[i])) {
 			continue;
 		}
 		SocketSend(node->mesh[i], &transfer, sizeof(transfer));
+	}
+	MutexLock(&node->lock);
+	node->linkCycles = 0;
+	node->transferState = TRANSFER_SENT_DATA;
+	ConditionWake(&node->dataNetworkCond);
+	MutexUnlock(&node->lock);
+
+	_doTransfer(node);
+}
+
+static void _doTransfer(struct GBASIOMultiMeshNode* node) {
+	struct PacketTransferData data = {
+		.type = PACKET_TRANSFER_DATA,
+		.id = node->id,
+		.data = node->d.p->p->memory.io[REG_SIOMLT_SEND >> 1]
+	};
+	node->transferValues[node->id] = data.data;
+	int i;
+	for (i = 0; i < node->connected; ++i) {
+		if (node->id == i || SOCKET_FAILED(node->mesh[i])) {
+			continue;
+		}
 		SocketSend(node->mesh[i], &data, sizeof(data));
 	}
-	node->transferActive &= ~1;
+}
 
-	MutexLock(&node->lock);
-	node->transferState = TRANSFER_ACTIVE;
-	node->nextEvent = 0;
-	ConditionWake(&node->dataRecvCond);
-	MutexUnlock(&node->lock);
+static void _finishTransfer(struct GBASIOMultiMeshNode* node) {
+	node->d.p->p->memory.io[REG_SIOMULTI0 >> 1] = node->transferValues[0];
+	node->d.p->p->memory.io[REG_SIOMULTI1 >> 1] = node->transferValues[1];
+	node->d.p->p->memory.io[REG_SIOMULTI2 >> 1] = node->transferValues[2];
+	node->d.p->p->memory.io[REG_SIOMULTI3 >> 1] = node->transferValues[3];
+	node->transferState = TRANSFER_IDLE;
+	node->nextEvent = INT_MAX;
+	GBALog(node->d.p->p, GBA_LOG_DEBUG, "Final values: %04X %04X %04X %04X", node->d.p->p->memory.io[REG_SIOMULTI0 >> 1], node->d.p->p->memory.io[REG_SIOMULTI1 >> 1], node->d.p->p->memory.io[REG_SIOMULTI2 >> 1], node->d.p->p->memory.io[REG_SIOMULTI3 >> 1]);
+	if (node->d.p->multiplayerControl.irq) {
+		GBARaiseIRQ(node->d.p->p, IRQ_SIO);
+	}
 }
 
 static void _siocntSync(struct GBASIOMultiMeshNode* node) {
@@ -337,6 +358,48 @@ static Socket _select(struct GBASIOMultiMeshNode* node, int* id) {
 	return -1;
 }
 
+static void _processTransferStart(struct GBASIOMultiMeshNode* node, struct PacketTransferStart* start) {
+	// FIXME: Don't do this only when a transfer starts
+	node->siocnt.slave = 1;
+	node->siocnt.ready = 1;
+	_siocntSync(node);
+	GBALog(node->d.p->p, GBA_LOG_DEBUG, "Sync packet: %i -> %i (%i)", node->linkCycles, start->sync, node->linkCycles - start->sync);
+
+	MutexLock(&node->lock);
+	node->linkCycles -= start->sync;
+	node->transferTime += node->linkCycles;
+	node->transferState = TRANSFER_GOT_START;
+	node->nextEvent = 0;
+	node->d.p->p->cpu->nextEvent = 0;
+	while (node->transferState == TRANSFER_GOT_START) {
+		// Wait for the GBA thread to set up our state
+		ConditionWait(&node->dataGBACond, &node->lock);
+	}
+	MutexUnlock(&node->lock);
+
+	_doTransfer(node);
+}
+
+static void _processTransferData(struct GBASIOMultiMeshNode* node, struct PacketTransferData* data) {
+	node->transferValues[data->id] = data->data;
+	node->transferActive &= ~(1 << data->id);
+	GBALog(node->d.p->p, GBA_LOG_DEBUG, "Data received: %04X %04X %04X %04X (from %i)", node->transferValues[0], node->transferValues[1], node->transferValues[2], node->transferValues[3], data->id);
+	if (!node->transferActive) {
+		node->siocnt.id = node->id;
+		node->siocnt.busy = 0;
+		_siocntSync(node);
+
+		MutexLock(&node->lock);
+		node->transferState = TRANSFER_FINISHED;
+		node->nextEvent = node->transferTime - node->linkCycles;
+		node->d.p->p->cpu->nextEvent = 0;
+		ConditionWake(&node->dataNetworkCond);
+		MutexUnlock(&node->lock);
+
+		GBALog(node->d.p->p, GBA_LOG_DEBUG, "Transfer ended, %i cycles remaining", node->transferTime - node->linkCycles);
+	}
+}
+
 static THREAD_ENTRY _networkThread(void* context) {
 	struct GBASIOMultiMeshNode* node = context;
 	while (node->active) {
@@ -344,20 +407,13 @@ static THREAD_ENTRY _networkThread(void* context) {
 		if (node->connected > 1) {
 			if (!node->id) {
 				MutexLock(&node->lock);
-				while (node->transferState < TRANSFER_PENDING) {
-					ConditionWait(&node->dataSendCond, &node->lock);
+				while (node->transferState == TRANSFER_IDLE || node->transferState == TRANSFER_FINISHED) {
+					ConditionWait(&node->dataGBACond, &node->lock);
 				}
-				enum TransferState state = node->transferState;
 				MutexUnlock(&node->lock);
-				if (state == TRANSFER_PENDING) {
+				if (node->transferState == TRANSFER_PENDING) {
 					_startTransfer(node);
 				}
-			} else {
-				MutexLock(&node->lock);
-				while (node->transferState == TRANSFER_FINISHED) {
-					ConditionWait(&node->dataSendCond, &node->lock);
-				}
-				MutexUnlock(&node->lock);
 			}
 		}
 		if (node->id == -1) {
@@ -375,9 +431,13 @@ static THREAD_ENTRY _networkThread(void* context) {
 				node->mesh[0] = INVALID_SOCKET;
 				return 0;
 			}
+			GBALog(node->d.p->p, GBA_LOG_DEBUG, "Sync (hello) packet: %i -> %i", node->linkCycles, hello.hello.sync);
+			MutexLock(&node->lock);
 			node->id = hello.hello.id;
 			node->mesh[node->id] = node->mesh[1];
+			node->linkCycles = hello.hello.sync;
 			node->connected = node->id + 1;
+			MutexUnlock(&node->lock);
 
 			// Tell the server about me
 			struct PacketJoin join = {
@@ -392,7 +452,7 @@ static THREAD_ENTRY _networkThread(void* context) {
 		Socket socket = _select(node, &id);
 		union Packet packet;
 		if (SOCKET_FAILED(socket)) {
-			break;
+			continue;
 		}
 		if (id == node->id) {
 			// Process incoming connections
@@ -412,6 +472,7 @@ static THREAD_ENTRY _networkThread(void* context) {
 			} else {
 				hello.type = PACKET_HELLO;
 				hello.id = node->connected;
+				hello.sync = node->linkCycles;
 				SocketSend(stranger, &hello, sizeof(hello));
 				node->siocnt.slave = 0;
 				node->siocnt.ready = 1;
@@ -466,64 +527,22 @@ static THREAD_ENTRY _networkThread(void* context) {
 				GBALog(node->d.p->p, GBA_LOG_INFO, "Welcomed player %u", packet.join.id);
 				break;
 			}
-			case PACKET_TRANSFER_START: {
+			case PACKET_TRANSFER_START:
 				SocketRecv(socket, &packet.data, sizeof(struct PacketTransferStart) - 1);
 				if (id) {
 					GBALog(node->d.p->p, GBA_LOG_ERROR, "Invalid transfer start");
 					continue;
 				}
-				// FIXME: Don't do this only when a transfer starts
-				node->siocnt.slave = 1;
-				node->siocnt.ready = 1;
-				_siocntSync(node);
-				_setupTransfer(node);
-				int i;
-				struct PacketTransferData data = {
-					.type = PACKET_TRANSFER_DATA,
-					.id = node->id,
-					.data =  node->d.p->p->memory.io[REG_SIOMLT_SEND >> 1]
-				};
-				for (i = 0; i < node->connected; ++i) {
-					if (node->id == i || SOCKET_FAILED(node->mesh[i])) {
-						continue;
-					}
-					SocketSend(node->mesh[i], &data, sizeof(data));
-				}
-				node->transferActive &= ~(1 << node->id);
-
-				GBALog(node->d.p->p, GBA_LOG_DEBUG, "Begin receiving SIO");
-				MutexLock(&node->lock);
-				node->transferState = TRANSFER_ACTIVE;
-				node->nextEvent = 0;
-				node->d.p->p->cpu->nextEvent = 0;
-				ConditionWake(&node->dataRecvCond);
-				MutexUnlock(&node->lock);
+				_processTransferStart(node, &packet.transferStart);
 				break;
-			}
-			case PACKET_TRANSFER_DATA: {
+			case PACKET_TRANSFER_DATA:
 				SocketRecv(socket, &packet.data, sizeof(struct PacketTransferData) - 1);
 				if (packet.transferData.id != id) {
 					GBALog(node->d.p->p, GBA_LOG_ERROR, "Invalid transfer sender");
 					continue;
 				}
-				node->transferValues[id] = packet.transferData.data;
-				node->transferActive &= ~(1 << id);
-				GBALog(node->d.p->p, GBA_LOG_DEBUG, "Peers remaining: %X", node->transferActive);
-				if (!node->transferActive) {
-					GBALog(node->d.p->p, GBA_LOG_DEBUG, "Data received: %04X %04X %04X %04X", node->transferValues[0], node->transferValues[1], node->transferValues[2], node->transferValues[3]);
-					node->siocnt.id = node->id;
-					node->siocnt.busy = 0;
-					_siocntSync(node);
-
-					MutexLock(&node->lock);
-					node->transferState = TRANSFER_FINISHED;
-					node->nextEvent = 0;
-					node->d.p->p->cpu->nextEvent = 0;
-					ConditionWake(&node->dataRecvCond);
-					MutexUnlock(&node->lock);
-				}
+				_processTransferData(node, &packet.transferData);
 				break;
-			}
 			default:
 				GBALog(node->d.p->p, GBA_LOG_ERROR, "Invalid packet type: %x", packet.type);
 				break;
