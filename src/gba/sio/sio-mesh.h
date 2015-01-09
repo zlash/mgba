@@ -33,7 +33,7 @@ struct GBASIOMultiMeshNode {
 	struct GBASIODriver d;
 
 	Thread networkThread;
-	int active;
+	bool active;
 	int port;
 	struct Address publicAddress[4];
 
@@ -54,7 +54,7 @@ struct GBASIOMultiMeshNode {
 		uint16_t packed;
 	} siocnt;
 
-	int transferActive;
+	bool transferActive;
 	uint16_t transferValues[MAX_GBAS];
 	int32_t transferTime;
 
@@ -68,7 +68,7 @@ struct GBASIOMultiMeshNode {
 	Condition dataNetworkCond;
 };
 
-int GBASIOMultiMeshCreateNode(struct GBASIOMultiMeshNode* node, int port, const struct Address* bindAddress);
-int GBASIOMultiMeshNodeConnect(struct GBASIOMultiMeshNode* node, int port, const struct Address* masterAddress, const struct Address* publicAddress);
+bool GBASIOMultiMeshCreateNode(struct GBASIOMultiMeshNode* node, int port, const struct Address* bindAddress);
+bool GBASIOMultiMeshNodeConnect(struct GBASIOMultiMeshNode* node, int port, const struct Address* masterAddress, const struct Address* publicAddress);
 
 #endif

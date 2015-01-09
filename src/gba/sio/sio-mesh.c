@@ -64,9 +64,9 @@ union Packet {
 	struct PacketTransferData transferData;
 };
 
-static int GBASIOMultiMeshInit(struct GBASIODriver* driver);
+static bool GBASIOMultiMeshInit(struct GBASIODriver* driver);
 static void GBASIOMultiMeshDeinit(struct GBASIODriver* driver);
-static int GBASIOMultiMeshLoad(struct GBASIODriver* driver);
+static bool GBASIOMultiMeshLoad(struct GBASIODriver* driver);
 static int GBASIOMultiMeshWriteRegister(struct GBASIODriver* driver, uint32_t address, uint16_t value);
 static int32_t GBASIOMultiMeshProcessEvents(struct GBASIODriver* driver, int32_t cycles);
 
@@ -77,7 +77,7 @@ static void _doTransfer(struct GBASIOMultiMeshNode* node);
 static void _finishTransfer(struct GBASIOMultiMeshNode* node);
 static void _siocntSync(struct GBASIOMultiMeshNode* node);
 
-int GBASIOMultiMeshCreateNode(struct GBASIOMultiMeshNode* node, int port, const struct Address* bindAddress) {
+bool GBASIOMultiMeshCreateNode(struct GBASIOMultiMeshNode* node, int port, const struct Address* bindAddress) {
 	MutexInit(&node->lock);
 	ConditionInit(&node->dataGBACond);
 	ConditionInit(&node->dataNetworkCond);
@@ -90,6 +90,7 @@ int GBASIOMultiMeshCreateNode(struct GBASIOMultiMeshNode* node, int port, const 
 	node->mesh[3] = INVALID_SOCKET;
 	node->siocnt.packed = 0;
 
+	node->active = false;
 	node->port = port;
 	node->publicAddress[0] = *bindAddress;
 
@@ -103,16 +104,16 @@ int GBASIOMultiMeshCreateNode(struct GBASIOMultiMeshNode* node, int port, const 
 
 	node->mesh[0] = SocketOpenTCP(port, bindAddress);
 	if (SOCKET_FAILED(node->mesh[0])) {
-		return 0;
+		return false;
 	}
 	if (SocketListen(node->mesh[0], 2)) {
 		SocketClose(node->mesh[0]);
-		return 0;
+		return false;
 	}
-	return 1;
+	return true;
 }
 
-int GBASIOMultiMeshNodeConnect(struct GBASIOMultiMeshNode* node, int port, const struct Address* masterAddress, const struct Address* publicAddress) {
+bool GBASIOMultiMeshNodeConnect(struct GBASIOMultiMeshNode* node, int port, const struct Address* masterAddress, const struct Address* publicAddress) {
 	Socket thisSocket = node->mesh[0];
 	if (publicAddress) {
 		node->publicAddress[0] = *publicAddress;
@@ -120,17 +121,17 @@ int GBASIOMultiMeshNodeConnect(struct GBASIOMultiMeshNode* node, int port, const
 	node->mesh[0] = SocketConnectTCP(port, masterAddress);
 	if (SOCKET_FAILED(node->mesh[0])) {
 		node->mesh[0] = thisSocket;
-		return 0;
+		return false;
 	}
 	node->mesh[1] = thisSocket;
 	node->id = -1;
-	return 1;
+	return true;
 }
 
-int GBASIOMultiMeshInit(struct GBASIODriver* driver) {
+bool GBASIOMultiMeshInit(struct GBASIODriver* driver) {
 	struct GBASIOMultiMeshNode* node = (struct GBASIOMultiMeshNode*) driver;
-	node->active = 1;
-	node->transferActive = 0;
+	node->active = true;
+	node->transferActive = false;
 	node->transferState = TRANSFER_IDLE;
 	node->transferValues[0] = 0xFFFF;
 	node->transferValues[1] = 0xFFFF;
@@ -142,14 +143,14 @@ int GBASIOMultiMeshInit(struct GBASIODriver* driver) {
 
 void GBASIOMultiMeshDeinit(struct GBASIODriver* driver) {
 	struct GBASIOMultiMeshNode* node = (struct GBASIOMultiMeshNode*) driver;
-	node->active = 0;
+	node->active = false;
 	ThreadJoin(node->networkThread);
 }
 
-int GBASIOMultiMeshLoad(struct GBASIODriver* driver) {
+bool GBASIOMultiMeshLoad(struct GBASIODriver* driver) {
 	struct GBASIOMultiMeshNode* node = (struct GBASIOMultiMeshNode*) driver;
 	_siocntSync(node);
-	return 1;
+	return true;
 }
 
 int GBASIOMultiMeshWriteRegister(struct GBASIODriver* driver, uint32_t address, uint16_t value) {
