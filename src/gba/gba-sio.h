@@ -22,7 +22,7 @@ enum {
 };
 
 // [baud][gbas]
-const int GBASIOCyclesPerTransfer[4][4];
+extern const int GBASIOCyclesPerTransfer[4][4];
 
 struct GBASIO;
 
