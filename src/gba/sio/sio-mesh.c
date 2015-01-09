@@ -159,14 +159,14 @@ int GBASIOMultiMeshWriteRegister(struct GBASIODriver* driver, uint32_t address, 
 			if (!node->id) {
 				MutexLock(&node->lock);
 				if (node->transferState != TRANSFER_IDLE) {
-					GBALog(node->d.p->p, GBA_LOG_ERROR, "Transfer backed up");
+					GBALog(node->d.p->p, GBA_LOG_SIO, "Transfer backed up");
 				}
 				_setupTransfer(node);
 				node->transferState = TRANSFER_PENDING;
 				ConditionWake(&node->dataGBACond);
 				MutexUnlock(&node->lock);
 			} else {
-				GBALog(node->d.p->p, GBA_LOG_ERROR, "Slave attempting to commence transfer");
+				GBALog(node->d.p->p, GBA_LOG_SIO, "Slave attempting to commence transfer");
 				value &= ~0x0080;
 				value |= driver->p->siocnt & 0x0080;
 			}
@@ -266,7 +266,7 @@ static void _finishTransfer(struct GBASIOMultiMeshNode* node) {
 	node->d.p->p->memory.io[REG_SIOMULTI3 >> 1] = node->transferValues[3];
 	node->transferState = TRANSFER_IDLE;
 	node->nextEvent = INT_MAX;
-	GBALog(node->d.p->p, GBA_LOG_DEBUG, "Final values: %04X %04X %04X %04X", node->d.p->p->memory.io[REG_SIOMULTI0 >> 1], node->d.p->p->memory.io[REG_SIOMULTI1 >> 1], node->d.p->p->memory.io[REG_SIOMULTI2 >> 1], node->d.p->p->memory.io[REG_SIOMULTI3 >> 1]);
+	GBALog(node->d.p->p, GBA_LOG_SIO, "[SIO] Final values: %04X %04X %04X %04X", node->d.p->p->memory.io[REG_SIOMULTI0 >> 1], node->d.p->p->memory.io[REG_SIOMULTI1 >> 1], node->d.p->p->memory.io[REG_SIOMULTI2 >> 1], node->d.p->p->memory.io[REG_SIOMULTI3 >> 1]);
 	if (node->d.p->multiplayerControl.irq) {
 		GBARaiseIRQ(node->d.p->p, IRQ_SIO);
 	}
@@ -368,7 +368,7 @@ static void _processTransferStart(struct GBASIOMultiMeshNode* node, struct Packe
 	node->siocnt.slave = 1;
 	node->siocnt.ready = 1;
 	_siocntSync(node);
-	GBALog(node->d.p->p, GBA_LOG_DEBUG, "Sync packet: %i -> %i (%i)", node->linkCycles, start->sync, node->linkCycles - start->sync);
+	GBALog(node->d.p->p, GBA_LOG_SIO, "Sync packet: %i -> %i (%i)", node->linkCycles, start->sync, node->linkCycles - start->sync);
 
 	MutexLock(&node->lock);
 	node->linkCycles -= start->sync;
@@ -388,7 +388,7 @@ static void _processTransferStart(struct GBASIOMultiMeshNode* node, struct Packe
 static void _processTransferData(struct GBASIOMultiMeshNode* node, struct PacketTransferData* data) {
 	node->transferValues[data->id] = data->data;
 	node->transferActive &= ~(1 << data->id);
-	GBALog(node->d.p->p, GBA_LOG_DEBUG, "Data received: %04X %04X %04X %04X (from %i)", node->transferValues[0], node->transferValues[1], node->transferValues[2], node->transferValues[3], data->id);
+	GBALog(node->d.p->p, GBA_LOG_SIO, "Data received: %04X %04X %04X %04X (from %i)", node->transferValues[0], node->transferValues[1], node->transferValues[2], node->transferValues[3], data->id);
 	if (!node->transferActive) {
 		node->siocnt.id = node->id;
 		node->siocnt.busy = 0;
@@ -401,7 +401,7 @@ static void _processTransferData(struct GBASIOMultiMeshNode* node, struct Packet
 		ConditionWake(&node->dataNetworkCond);
 		MutexUnlock(&node->lock);
 
-		GBALog(node->d.p->p, GBA_LOG_DEBUG, "Transfer ended, %i cycles remaining", node->transferTime - node->linkCycles);
+		GBALog(node->d.p->p, GBA_LOG_SIO, "Transfer ended, %i cycles remaining", node->transferTime - node->linkCycles);
 	}
 }
 
@@ -426,17 +426,17 @@ static THREAD_ENTRY _networkThread(void* context) {
 			union Packet hello;
 			int read = SocketRecv(node->mesh[0], &hello, 1);
 			if (read == 1 && hello.type != PACKET_HELLO) {
-				GBALog(node->d.p->p, GBA_LOG_ERROR, "Received non-Hello packet from master");
+				GBALog(node->d.p->p, GBA_LOG_SIO, "Received non-Hello packet from master");
 				continue;
 			}
 			read += SocketRecv(node->mesh[0], &hello.data, sizeof(hello.hello) - 1);
 			if (read < (int) sizeof(hello.hello) || hello.hello.id >= MAX_GBAS) {
-				GBALog(node->d.p->p, GBA_LOG_ERROR, "Invalid Hello packet from master: %02X%02X (size %u vs %u)", hello.type, hello.hello.id, read, (int) sizeof(hello));
+				GBALog(node->d.p->p, GBA_LOG_SIO, "Invalid Hello packet from master: %02X%02X (size %u vs %u)", hello.type, hello.hello.id, read, (int) sizeof(hello));
 				SocketClose(node->mesh[0]);
 				node->mesh[0] = INVALID_SOCKET;
 				return 0;
 			}
-			GBALog(node->d.p->p, GBA_LOG_DEBUG, "Sync (hello) packet: %i -> %i", node->linkCycles, hello.hello.sync);
+			GBALog(node->d.p->p, GBA_LOG_SIO, "Sync (hello) packet: %i -> %i", node->linkCycles, hello.hello.sync);
 			MutexLock(&node->lock);
 			node->id = hello.hello.id;
 			node->mesh[node->id] = node->mesh[1];
@@ -463,14 +463,14 @@ static THREAD_ENTRY _networkThread(void* context) {
 			// Process incoming connections
 			Socket stranger = SocketAccept(socket, 0);
 			if (SOCKET_FAILED(stranger)) {
-				GBALog(node->d.p->p, GBA_LOG_ERROR, "Failed connection");
+				GBALog(node->d.p->p, GBA_LOG_SIO, "Failed connection");
 				continue;
 			}
 			struct PacketHello hello;
 			if (node->id) {
 				SocketRecv(stranger, &hello, sizeof(hello));
 				if (hello.type != PACKET_HELLO || hello.id >= MAX_GBAS || node->mesh[hello.id] != -1) {
-					GBALog(node->d.p->p, GBA_LOG_ERROR, "Invalid Hello packet");
+					GBALog(node->d.p->p, GBA_LOG_SIO, "Invalid Hello packet");
 					SocketClose(stranger);
 					continue;
 				}
@@ -492,7 +492,7 @@ static THREAD_ENTRY _networkThread(void* context) {
 				// TODO: Reconfigure mesh
 				continue;
 			}
-			GBALog(node->d.p->p, GBA_LOG_DEBUG, "Received packet of type %02X", packet.type);
+			GBALog(node->d.p->p, GBA_LOG_SIO, "Received packet of type %02X", packet.type);
 			switch(packet.type) {
 			case PACKET_JOIN: {
 				struct Address ipAddress;
@@ -502,22 +502,22 @@ static THREAD_ENTRY _networkThread(void* context) {
 				if (node->id) {
 					if (id != 0) {
 						// Ignore Join packets from sources other than master
-						GBALog(node->d.p->p, GBA_LOG_ERROR, "Invalid Join packet sender");
+						GBALog(node->d.p->p, GBA_LOG_SIO, "Invalid Join packet sender");
 						break;
 					}
 					if (packet.join.id >= MAX_GBAS) {
-						GBALog(node->d.p->p, GBA_LOG_ERROR, "Invalid Join packet");
+						GBALog(node->d.p->p, GBA_LOG_SIO, "Invalid Join packet");
 						break;
 					}
 					if (node->mesh[packet.join.id] >= 0) {
-						GBALog(node->d.p->p, GBA_LOG_ERROR, "Redundant Join packet");
+						GBALog(node->d.p->p, GBA_LOG_SIO, "Redundant Join packet");
 						break;
 					}
 					node->mesh[packet.join.id] = _greet(node, packet.join.port, &ipAddress);
 				} else {
 					// Broadcast the join packet we get from the client
 					if (id != packet.join.id) {
-						GBALog(node->d.p->p, GBA_LOG_ERROR, "Invalid Join packet");
+						GBALog(node->d.p->p, GBA_LOG_SIO, "Invalid Join packet");
 						break;
 					}
 					int i;
@@ -529,13 +529,13 @@ static THREAD_ENTRY _networkThread(void* context) {
 						SocketSend(node->mesh[i], &ipAddress, sizeof(ipAddress));
 					}
 				}
-				GBALog(node->d.p->p, GBA_LOG_INFO, "Welcomed player %u", packet.join.id);
+				GBALog(node->d.p->p, GBA_LOG_SIO, "Welcomed player %u", packet.join.id);
 				break;
 			}
 			case PACKET_TRANSFER_START:
 				SocketRecv(socket, &packet.data, sizeof(struct PacketTransferStart) - 1);
 				if (id) {
-					GBALog(node->d.p->p, GBA_LOG_ERROR, "Invalid transfer start");
+					GBALog(node->d.p->p, GBA_LOG_SIO, "Invalid transfer start");
 					continue;
 				}
 				_processTransferStart(node, &packet.transferStart);
@@ -543,13 +543,13 @@ static THREAD_ENTRY _networkThread(void* context) {
 			case PACKET_TRANSFER_DATA:
 				SocketRecv(socket, &packet.data, sizeof(struct PacketTransferData) - 1);
 				if (packet.transferData.id != id) {
-					GBALog(node->d.p->p, GBA_LOG_ERROR, "Invalid transfer sender");
+					GBALog(node->d.p->p, GBA_LOG_SIO, "Invalid transfer sender");
 					continue;
 				}
 				_processTransferData(node, &packet.transferData);
 				break;
 			default:
-				GBALog(node->d.p->p, GBA_LOG_ERROR, "Invalid packet type: %x", packet.type);
+				GBALog(node->d.p->p, GBA_LOG_SIO, "Invalid packet type: %x", packet.type);
 				break;
 			}
 		}
