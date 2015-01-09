@@ -16,6 +16,7 @@
  * - 0x01: Hello
  * - 0x02: Join
  * - 0x03: Leave
+ * - 0x04: Reuse existing connection
  * - 0x10: Transfer start
  * - 0x11: Transfer data
  */
@@ -24,6 +25,7 @@ enum PacketType {
 	PACKET_HELLO = 0x01,
 	PACKET_JOIN = 0x02,
 	PACKET_LEAVE = 0x03,
+	PACKET_REUSE_EXISTING = 0x04,
 	PACKET_TRANSFER_START = 0x10,
 	PACKET_TRANSFER_DATA = 0x11
 };
@@ -39,6 +41,12 @@ struct PacketJoin {
 	uint8_t id;
 	uint16_t port;
 	uint32_t ipVersion;
+};
+
+struct PacketReuse {
+	uint8_t type; // 0x04
+	uint8_t id;
+	uint32_t nonce;
 };
 
 struct PacketTransferStart {
@@ -60,6 +68,7 @@ union Packet {
 	};
 	struct PacketHello hello;
 	struct PacketJoin join;
+	struct PacketReuse reuse;
 	struct PacketTransferStart transferStart;
 	struct PacketTransferData transferData;
 };
@@ -280,14 +289,16 @@ static void _siocntSync(struct GBASIOMultiMeshNode* node) {
 	}
 }
 
-static Socket _greet(struct GBASIOMultiMeshNode* node, int port, const struct Address* ipAddress) {
+static Socket _greet(struct GBASIOMultiMeshNode* node, int port, const struct Address* ipAddress, int id) {
 	Socket socket = SocketConnectTCP(port, ipAddress);
 	if (SOCKET_FAILED(socket)) {
 		return -1;
 	}
+	node->nonces[id] = rand();
 	struct PacketHello hello = {
 		.type = PACKET_HELLO,
-		.id = node->id
+		.id = node->id,
+		.sync = node->nonces[id]
 	};
 	if (SocketSend(socket, &hello, sizeof(hello)) != sizeof(hello)) {
 		SocketClose(socket);
@@ -441,6 +452,9 @@ static THREAD_ENTRY _networkThread(void* context) {
 			MutexLock(&node->lock);
 			node->id = hello.hello.id;
 			node->mesh[node->id] = node->mesh[1];
+			if (node->id != 1) {
+				node->mesh[1] = INVALID_SOCKET;
+			}
 			node->linkCycles = hello.hello.sync;
 			node->connected = node->id + 1;
 			MutexUnlock(&node->lock);
@@ -470,9 +484,25 @@ static THREAD_ENTRY _networkThread(void* context) {
 			struct PacketHello hello;
 			if (node->id) {
 				SocketRecv(stranger, &hello, sizeof(hello));
-				if (hello.type != PACKET_HELLO || hello.id >= MAX_GBAS || node->mesh[hello.id] != -1) {
+				if (hello.type != PACKET_HELLO || hello.id >= MAX_GBAS) {
 					GBALog(node->d.p->p, GBA_LOG_SIO, "Invalid Hello packet");
 					SocketClose(stranger);
+					continue;
+				}
+				if (node->mesh[hello.id] != INVALID_SOCKET) {
+					// Whoops, we've already greeted them
+					GBALog(node->d.p->p, GBA_LOG_SIO, "Redundant Hello packet");
+					struct PacketReuse reuse;
+					reuse.type = PACKET_REUSE_EXISTING;
+					reuse.id = node->id;
+					reuse.nonce = hello.sync;
+					SocketSend(stranger, &reuse, sizeof(reuse));
+					if (hello.id < node->id) {
+						SocketClose(stranger);
+					} else {
+						SocketClose(node->mesh[hello.id]);
+						node->mesh[hello.id] = stranger;
+					}
 					continue;
 				}
 			} else {
@@ -493,7 +523,7 @@ static THREAD_ENTRY _networkThread(void* context) {
 				// TODO: Reconfigure mesh
 				continue;
 			}
-			GBALog(node->d.p->p, GBA_LOG_SIO, "Received packet of type %02X", packet.type);
+			GBALog(node->d.p->p, GBA_LOG_SIO, "Received packet of type %02X from node %i", packet.type, id);
 			switch(packet.type) {
 			case PACKET_JOIN: {
 				struct Address ipAddress;
@@ -510,11 +540,12 @@ static THREAD_ENTRY _networkThread(void* context) {
 						GBALog(node->d.p->p, GBA_LOG_SIO, "Invalid Join packet");
 						break;
 					}
-					if (node->mesh[packet.join.id] >= 0) {
+					if (node->mesh[packet.join.id] != INVALID_SOCKET) {
 						GBALog(node->d.p->p, GBA_LOG_SIO, "Redundant Join packet");
 						break;
 					}
-					node->mesh[packet.join.id] = _greet(node, packet.join.port, &ipAddress);
+					node->mesh[packet.join.id] = _greet(node, packet.join.port, &ipAddress, packet.join.id);
+					++node->connected;
 				} else {
 					// Broadcast the join packet we get from the client
 					if (id != packet.join.id) {
@@ -527,12 +558,30 @@ static THREAD_ENTRY _networkThread(void* context) {
 							continue;
 						}
 						SocketSend(node->mesh[i], &packet, sizeof(struct PacketJoin));
-						SocketSend(node->mesh[i], &ipAddress, sizeof(ipAddress));
+						if (ipAddress.version == IPV4) {
+							SocketSend(node->mesh[i], &ipAddress.ipv4, sizeof(ipAddress.ipv4));
+						} else {
+							SocketSend(node->mesh[i], &ipAddress.ipv6, sizeof(ipAddress.ipv6));
+						}
 					}
 				}
 				GBALog(node->d.p->p, GBA_LOG_SIO, "Welcomed player %u", packet.join.id);
 				break;
 			}
+			case PACKET_REUSE_EXISTING:
+				SocketRecv(socket, &packet.data, sizeof(struct PacketReuse) - 1);
+				if (packet.reuse.id != id) {
+					GBALog(node->d.p->p, GBA_LOG_SIO, "Invalid reuse sender");
+					continue;
+				}
+				if (packet.reuse.nonce != node->nonces[id]) {
+					GBALog(node->d.p->p, GBA_LOG_SIO, "Mismatched nonce from id %i", id);
+					SocketClose(node->mesh[id]);
+					node->mesh[id] = INVALID_SOCKET;
+					continue;
+				}
+
+				break;
 			case PACKET_TRANSFER_START:
 				SocketRecv(socket, &packet.data, sizeof(struct PacketTransferStart) - 1);
 				if (id) {

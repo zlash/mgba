@@ -11,8 +11,6 @@
 #include "util/socket.h"
 #include "util/threading.h"
 
-#define MAX_GBAS 4
-
 // State transitions:
 // IDLE ------> PENDING (GBA thread)
 // PENDING ---> GOT_START (Network thread)
@@ -35,11 +33,12 @@ struct GBASIOMultiMeshNode {
 	Thread networkThread;
 	bool active;
 	int port;
-	struct Address publicAddress[4];
+	struct Address publicAddress[MAX_GBAS];
 
 	int id;
 	int connected;
 	Socket mesh[MAX_GBAS];
+	uint32_t nonces[MAX_GBAS];
 
 	union {
 		struct {
