@@ -35,7 +35,7 @@ struct GBASIOMultiMeshNode {
 	Thread networkThread;
 	int active;
 	int port;
-	uint32_t publicAddress[4];
+	struct Address publicAddress[4];
 
 	int id;
 	int connected;
@@ -68,8 +68,7 @@ struct GBASIOMultiMeshNode {
 	Condition dataNetworkCond;
 };
 
-// TODO: IPv6 support
-int GBASIOMultiMeshCreateNode(struct GBASIOMultiMeshNode* node, int port, uint32_t bindAddress);
-int GBASIOMultiMeshNodeConnect(struct GBASIOMultiMeshNode* node, int port, uint32_t masterAddress, uint32_t publicAddress);
+int GBASIOMultiMeshCreateNode(struct GBASIOMultiMeshNode* node, int port, const struct Address* bindAddress);
+int GBASIOMultiMeshNodeConnect(struct GBASIOMultiMeshNode* node, int port, const struct Address* masterAddress, const struct Address* publicAddress);
 
 #endif

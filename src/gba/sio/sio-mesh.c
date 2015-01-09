@@ -77,7 +77,7 @@ static void _doTransfer(struct GBASIOMultiMeshNode* node);
 static void _finishTransfer(struct GBASIOMultiMeshNode* node);
 static void _siocntSync(struct GBASIOMultiMeshNode* node);
 
-int GBASIOMultiMeshCreateNode(struct GBASIOMultiMeshNode* node, int port, uint32_t bindAddress) {
+int GBASIOMultiMeshCreateNode(struct GBASIOMultiMeshNode* node, int port, const struct Address* bindAddress) {
 	MutexInit(&node->lock);
 	ConditionInit(&node->dataGBACond);
 	ConditionInit(&node->dataNetworkCond);
@@ -91,7 +91,7 @@ int GBASIOMultiMeshCreateNode(struct GBASIOMultiMeshNode* node, int port, uint32
 	node->siocnt.packed = 0;
 
 	node->port = port;
-	node->publicAddress[0] = bindAddress;
+	node->publicAddress[0] = *bindAddress;
 
 	node->d.p = 0;
 	node->d.init = GBASIOMultiMeshInit;
@@ -112,10 +112,10 @@ int GBASIOMultiMeshCreateNode(struct GBASIOMultiMeshNode* node, int port, uint32
 	return 1;
 }
 
-int GBASIOMultiMeshNodeConnect(struct GBASIOMultiMeshNode* node, int port, uint32_t masterAddress, uint32_t publicAddress) {
+int GBASIOMultiMeshNodeConnect(struct GBASIOMultiMeshNode* node, int port, const struct Address* masterAddress, const struct Address* publicAddress) {
 	Socket thisSocket = node->mesh[0];
 	if (publicAddress) {
-		node->publicAddress[0] = publicAddress;
+		node->publicAddress[0] = *publicAddress;
 	}
 	node->mesh[0] = SocketConnectTCP(port, masterAddress);
 	if (SOCKET_FAILED(node->mesh[0])) {
@@ -279,7 +279,7 @@ static void _siocntSync(struct GBASIOMultiMeshNode* node) {
 	}
 }
 
-static Socket _greet(struct GBASIOMultiMeshNode* node, int port, uint32_t ipAddress) {
+static Socket _greet(struct GBASIOMultiMeshNode* node, int port, const struct Address* ipAddress) {
 	Socket socket = SocketConnectTCP(port, ipAddress);
 	if (SOCKET_FAILED(socket)) {
 		return -1;
@@ -295,7 +295,7 @@ static Socket _greet(struct GBASIOMultiMeshNode* node, int port, uint32_t ipAddr
 	return socket;
 }
 
-static int  _readIPAddress(Socket socket, int ipVersion, void* ipAddress, int ipAddressSize) {
+static int  _readIPAddress(Socket socket, int ipVersion, struct Address* ipAddress, int ipAddressSize) {
 	int read;
 	int toRead;
 	int excessRead = 0;
@@ -311,7 +311,7 @@ static int  _readIPAddress(Socket socket, int ipVersion, void* ipAddress, int ip
 		excessRead = toRead - ipAddressSize;
 		toRead = ipAddressSize;
 	}
-	read = SocketRecv(socket, ipAddress, toRead);
+	read = SocketRecv(socket, ipAddress->ipv6, toRead);
 	while (excessRead > 0) {
 		uint32_t buffer;
 		toRead = sizeof(buffer);
@@ -461,7 +461,7 @@ static THREAD_ENTRY _networkThread(void* context) {
 		}
 		if (id == node->id) {
 			// Process incoming connections
-			Socket stranger = SocketAccept(socket, 0, 0);
+			Socket stranger = SocketAccept(socket, 0);
 			if (SOCKET_FAILED(stranger)) {
 				GBALog(node->d.p->p, GBA_LOG_ERROR, "Failed connection");
 				continue;
@@ -495,7 +495,7 @@ static THREAD_ENTRY _networkThread(void* context) {
 			GBALog(node->d.p->p, GBA_LOG_DEBUG, "Received packet of type %02X", packet.type);
 			switch(packet.type) {
 			case PACKET_JOIN: {
-				uint32_t ipAddress;
+				struct Address ipAddress;
 				// TODO: Check the return values of these
 				SocketRecv(socket, &packet.data, sizeof(struct PacketJoin) - 1);
 				_readIPAddress(socket, packet.join.ipVersion, &ipAddress, sizeof(ipAddress));
@@ -513,7 +513,7 @@ static THREAD_ENTRY _networkThread(void* context) {
 						GBALog(node->d.p->p, GBA_LOG_ERROR, "Redundant Join packet");
 						break;
 					}
-					node->mesh[packet.join.id] = _greet(node, packet.join.port, ipAddress);
+					node->mesh[packet.join.id] = _greet(node, packet.join.port, &ipAddress);
 				} else {
 					// Broadcast the join packet we get from the client
 					if (id != packet.join.id) {
