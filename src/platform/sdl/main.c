@@ -17,6 +17,7 @@
 #include "gba.h"
 #include "gba-config.h"
 #include "gba-video.h"
+#include "sio/sio-mesh.h"
 #include "platform/commandline.h"
 #include "util/configuration.h"
 
@@ -25,6 +26,7 @@
 #include <errno.h>
 #include <signal.h>
 #include <sys/time.h>
+#include <arpa/inet.h>
 
 #define PORT "sdl"
 
@@ -95,6 +97,21 @@ int main(int argc, char** argv) {
 
 	GBAMapOptionsToContext(&opts, &context);
 	GBAMapArgumentsToContext(&args, &context);
+
+	struct GBASIOMultiMeshNode node;
+
+	if (args.meshPort) {
+		struct Address address = { .version = IPV4 };
+		struct in_addr addr;
+		if (inet_aton("127.0.0.1", &addr)) {
+			address.ipv4 = addr.s_addr;
+		}
+		GBASIOMultiMeshCreateNode(&node, args.meshPort, &address);
+		context.sioDrivers.multiplayer = &node.d;
+		if (args.meshMaster) {
+			GBASIOMultiMeshNodeConnect(&node, args.meshMaster, &address, &address);
+		}
+	}
 
 	renderer.audio.samples = context.audioBuffers;
 	GBASDLInitAudio(&renderer.audio, &context);

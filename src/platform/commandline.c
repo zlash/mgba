@@ -42,6 +42,8 @@ static const struct option _options[] = {
 #ifdef USE_GDB_STUB
 	{ "gdb",       no_argument, 0, 'g' },
 #endif
+	{ "mp-port",   required_argument, 0, 'm' },
+	{ "mp-master", required_argument, 0, 'M' },
 	{ "patch",     required_argument, 0, 'p' },
 	{ 0, 0, 0, 0 }
 };
@@ -51,7 +53,7 @@ bool _parseGraphicsArg(struct SubParser* parser, struct GBAConfig* config, int o
 bool parseArguments(struct GBAArguments* opts, struct GBAConfig* config, int argc, char* const* argv, struct SubParser* subparser) {
 	int ch;
 	char options[64] =
-		"b:Dl:p:s:"
+		"b:Dl:p:s:m:M:"
 #ifdef USE_CLI_DEBUGGER
 		"d"
 #endif
@@ -89,6 +91,12 @@ bool parseArguments(struct GBAArguments* opts, struct GBAConfig* config, int arg
 #endif
 		case 'l':
 			GBAConfigSetDefaultValue(config, "logLevel", optarg);
+			break;
+		case 'm':
+			opts->meshPort = atoi(optarg);
+			break;
+		case 'M':
+			opts->meshMaster = atoi(optarg);
 			break;
 		case 'p':
 			opts->patch = strdup(optarg);

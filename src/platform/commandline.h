@@ -28,6 +28,9 @@ struct GBAArguments {
 
 	enum DebuggerType debuggerType;
 	bool debugAtStart;
+
+	int meshPort;
+	int meshMaster;
 };
 
 struct SubParser {
