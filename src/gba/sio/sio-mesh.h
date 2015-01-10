@@ -53,7 +53,7 @@ struct GBASIOMultiMeshNode {
 		uint16_t packed;
 	} siocnt;
 
-	bool transferActive;
+	int transferActive;
 	uint16_t transferValues[MAX_GBAS];
 	int32_t transferTime;
 

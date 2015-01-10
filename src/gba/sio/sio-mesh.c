@@ -140,7 +140,7 @@ bool GBASIOMultiMeshNodeConnect(struct GBASIOMultiMeshNode* node, int port, cons
 bool GBASIOMultiMeshInit(struct GBASIODriver* driver) {
 	struct GBASIOMultiMeshNode* node = (struct GBASIOMultiMeshNode*) driver;
 	node->active = true;
-	node->transferActive = false;
+	node->transferActive = 0;
 	node->transferState = TRANSFER_IDLE;
 	node->transferValues[0] = 0xFFFF;
 	node->transferValues[1] = 0xFFFF;
@@ -195,6 +195,7 @@ int32_t GBASIOMultiMeshProcessEvents(struct GBASIODriver* driver, int32_t cycles
 		node->nextEvent -= cycles;
 		if (node->nextEvent <= 0) {
 			while (node->transferState == TRANSFER_PENDING) {
+				ConditionWake(&node->dataGBACond);
 				ConditionWait(&node->dataNetworkCond, &node->lock);
 			}
 			if (node->transferState == TRANSFER_GOT_START) {
@@ -204,6 +205,7 @@ int32_t GBASIOMultiMeshProcessEvents(struct GBASIODriver* driver, int32_t cycles
 				ConditionWake(&node->dataGBACond);
 			} else {
 				while (node->transferState == TRANSFER_SENT_DATA) {
+					ConditionWake(&node->dataGBACond);
 					ConditionWait(&node->dataNetworkCond, &node->lock);
 				}
 				if (node->transferState != TRANSFER_FINISHED) {
@@ -359,7 +361,8 @@ static Socket _select(struct GBASIOMultiMeshNode* node, int* id) {
 			maxFd = node->mesh[i];
 		}
 	}
-	int ready = select(maxFd + 1, &set, 0, &errorSet, 0);
+	struct timeval tv = { .tv_sec = 0, .tv_usec = 10000 };
+	int ready = select(maxFd + 1, &set, 0, &errorSet, &tv);
 	if (!ready) {
 		return -1;
 	}
@@ -390,6 +393,7 @@ static void _processTransferStart(struct GBASIOMultiMeshNode* node, struct Packe
 	node->d.p->p->cpu->nextEvent = 0;
 	while (node->transferState == TRANSFER_GOT_START) {
 		// Wait for the GBA thread to set up our state
+		ConditionWake(&node->dataNetworkCond);
 		ConditionWait(&node->dataGBACond, &node->lock);
 	}
 	MutexUnlock(&node->lock);
@@ -425,6 +429,7 @@ static THREAD_ENTRY _networkThread(void* context) {
 			if (!node->id) {
 				MutexLock(&node->lock);
 				while (node->transferState == TRANSFER_IDLE || node->transferState == TRANSFER_FINISHED) {
+					ConditionWake(&node->dataNetworkCond);
 					ConditionWait(&node->dataGBACond, &node->lock);
 				}
 				MutexUnlock(&node->lock);
@@ -456,7 +461,7 @@ static THREAD_ENTRY _networkThread(void* context) {
 				node->mesh[1] = INVALID_SOCKET;
 			}
 			node->linkCycles = hello.hello.sync;
-			node->connected = node->id + 1;
+			++node->connected;
 			MutexUnlock(&node->lock);
 
 			// Tell the server about me
@@ -503,6 +508,7 @@ static THREAD_ENTRY _networkThread(void* context) {
 						SocketClose(node->mesh[hello.id]);
 						node->mesh[hello.id] = stranger;
 					}
+					++node->connected;
 					continue;
 				}
 			} else {
@@ -545,7 +551,6 @@ static THREAD_ENTRY _networkThread(void* context) {
 						break;
 					}
 					node->mesh[packet.join.id] = _greet(node, packet.join.port, &ipAddress, packet.join.id);
-					++node->connected;
 				} else {
 					// Broadcast the join packet we get from the client
 					if (id != packet.join.id) {
