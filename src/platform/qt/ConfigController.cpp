@@ -1,4 +1,4 @@
-/* Copyright (c) 2013-2014 Jeffrey Pfau
+/* Copyright (c) 2013-2015 Jeffrey Pfau
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -12,6 +12,7 @@
 #include <QMenu>
 
 extern "C" {
+#include "gba/supervisor/overrides.h"
 #include "platform/commandline.h"
 }
 
@@ -155,6 +156,11 @@ QVariant ConfigController::getQtOption(const QString& key, const QString& group)
 		m_settings->endGroup();
 	}
 	return value;
+}
+
+void ConfigController::saveOverride(const GBACartridgeOverride& override) {
+	GBAOverrideSave(overrides(), &override);
+	write();
 }
 
 void ConfigController::setOption(const char* key, bool value) {

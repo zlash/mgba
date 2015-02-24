@@ -1,4 +1,4 @@
-/* Copyright (c) 2013-2014 Jeffrey Pfau
+/* Copyright (c) 2013-2015 Jeffrey Pfau
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -14,7 +14,7 @@
 #include <functional>
 
 extern "C" {
-#include "gba.h"
+#include "gba/gba.h"
 }
 
 #include "GDBController.h"
@@ -67,7 +67,9 @@ public slots:
 	void openSettingsWindow();
 	void openShortcutWindow();
 
-	void openGamePakWindow();
+	void openOverrideWindow();
+	void openSensorWindow();
+	void openCheatsWindow();
 
 #ifdef BUILD_SDL
 	void openGamepadWindow();
@@ -91,12 +93,14 @@ protected:
 	virtual void resizeEvent(QResizeEvent*) override;
 	virtual void closeEvent(QCloseEvent*) override;
 	virtual void focusOutEvent(QFocusEvent*) override;
+	virtual void dragEnterEvent(QDragEnterEvent*) override;
+	virtual void dropEvent(QDropEvent*) override;
 
 private slots:
 	void gameStarted(GBAThread*);
 	void gameStopped();
 	void gameCrashed(const QString&);
-	void redoLogo();
+	void gameFailed();
 
 	void recordFrame();
 	void showFPS();
@@ -152,9 +156,15 @@ public:
 
 	void setSizeHint(const QSize& size);
 	virtual QSize sizeHint() const override;
+	void setLockAspectRatio(int width, int height);
+
+protected:
+	virtual void paintEvent(QPaintEvent*) override;
 
 private:
 	QSize m_sizeHint;
+	int m_aspectWidth;
+	int m_aspectHeight;
 };
 
 }

@@ -1,15 +1,17 @@
-/* Copyright (c) 2013-2014 Jeffrey Pfau
+/* Copyright (c) 2013-2015 Jeffrey Pfau
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 #include "gba.h"
 
-#include "gba-bios.h"
-#include "gba-io.h"
-#include "gba-rr.h"
-#include "gba-sio.h"
-#include "gba-thread.h"
+#include "gba/bios.h"
+#include "gba/cheats.h"
+#include "gba/io.h"
+#include "gba/supervisor/rr.h"
+#include "gba/supervisor/thread.h"
+#include "gba/serialize.h"
+#include "gba/sio.h"
 
 #include "isa-inlines.h"
 
@@ -21,101 +23,8 @@
 const uint32_t GBA_ARM7TDMI_FREQUENCY = 0x1000000;
 const uint32_t GBA_COMPONENT_MAGIC = 0x1000000;
 
-static const size_t GBA_ROM_MAGIC_OFFSET = 2;
-static const uint8_t GBA_ROM_MAGIC[] = { 0x00, 0xEA };
-
-struct GBACartridgeOverride {
-	const char id[4];
-	enum SavedataType type;
-	int gpio;
-	uint32_t busyLoop;
-};
-
-static const struct GBACartridgeOverride _overrides[] = {
-	// Boktai: The Sun is in Your Hand
-	{ "U3IE", SAVEDATA_EEPROM, GPIO_RTC | GPIO_LIGHT_SENSOR, -1 },
-	{ "U3IP", SAVEDATA_EEPROM, GPIO_RTC | GPIO_LIGHT_SENSOR, -1 },
-
-	// Boktai 2: Solar Boy Django
-	{ "U32E", SAVEDATA_EEPROM, GPIO_RTC | GPIO_LIGHT_SENSOR, -1 },
-	{ "U32P", SAVEDATA_EEPROM, GPIO_RTC | GPIO_LIGHT_SENSOR, -1 },
-
-	// Drill Dozer
-	{ "V49J", SAVEDATA_SRAM, GPIO_RUMBLE, -1 },
-	{ "V49E", SAVEDATA_SRAM, GPIO_RUMBLE, -1 },
-
-	// Final Fantasy Tactics Advance
-	{ "AFXE", SAVEDATA_FLASH512, GPIO_NONE, 0x8000418 },
-
-	// Koro Koro Puzzle - Happy Panechu!
-	{ "KHPJ", SAVEDATA_EEPROM, GPIO_TILT, -1 },
-
-	// Mega Man Battle Network
-	{ "AREE", SAVEDATA_SRAM, GPIO_NONE, 0x800032E },
-
-	// Pokemon Ruby
-	{ "AXVJ", SAVEDATA_FLASH1M, GPIO_RTC, -1 },
-	{ "AXVE", SAVEDATA_FLASH1M, GPIO_RTC, -1 },
-	{ "AXVP", SAVEDATA_FLASH1M, GPIO_RTC, -1 },
-	{ "AXVI", SAVEDATA_FLASH1M, GPIO_RTC, -1 },
-	{ "AXVS", SAVEDATA_FLASH1M, GPIO_RTC, -1 },
-	{ "AXVD", SAVEDATA_FLASH1M, GPIO_RTC, -1 },
-	{ "AXVF", SAVEDATA_FLASH1M, GPIO_RTC, -1 },
-
-	// Pokemon Sapphire
-	{ "AXPJ", SAVEDATA_FLASH1M, GPIO_RTC, -1 },
-	{ "AXPE", SAVEDATA_FLASH1M, GPIO_RTC, -1 },
-	{ "AXPP", SAVEDATA_FLASH1M, GPIO_RTC, -1 },
-	{ "AXPI", SAVEDATA_FLASH1M, GPIO_RTC, -1 },
-	{ "AXPS", SAVEDATA_FLASH1M, GPIO_RTC, -1 },
-	{ "AXPD", SAVEDATA_FLASH1M, GPIO_RTC, -1 },
-	{ "AXPF", SAVEDATA_FLASH1M, GPIO_RTC, -1 },
-
-	// Pokemon Emerald
-	{ "BPEJ", SAVEDATA_FLASH1M, GPIO_RTC, -1 },
-	{ "BPEE", SAVEDATA_FLASH1M, GPIO_RTC, -1 },
-	{ "BPEP", SAVEDATA_FLASH1M, GPIO_RTC, -1 },
-	{ "BPEI", SAVEDATA_FLASH1M, GPIO_RTC, -1 },
-	{ "BPES", SAVEDATA_FLASH1M, GPIO_RTC, -1 },
-	{ "BPED", SAVEDATA_FLASH1M, GPIO_RTC, -1 },
-	{ "BPEF", SAVEDATA_FLASH1M, GPIO_RTC, -1 },
-
-	// Pokemon Mystery Dungeon
-	{ "B24J", SAVEDATA_FLASH1M, GPIO_NONE, -1 },
-	{ "B24E", SAVEDATA_FLASH1M, GPIO_NONE, -1 },
-	{ "B24P", SAVEDATA_FLASH1M, GPIO_NONE, -1 },
-	{ "B24U", SAVEDATA_FLASH1M, GPIO_NONE, -1 },
-
-	// Pokemon FireRed
-	{ "BPRJ", SAVEDATA_FLASH1M, GPIO_NONE, -1 },
-	{ "BPRE", SAVEDATA_FLASH1M, GPIO_NONE, -1 },
-	{ "BPRP", SAVEDATA_FLASH1M, GPIO_NONE, -1 },
-
-	// Pokemon LeafGreen
-	{ "BPGJ", SAVEDATA_FLASH1M, GPIO_NONE, -1 },
-	{ "BPGE", SAVEDATA_FLASH1M, GPIO_NONE, -1 },
-	{ "BPGP", SAVEDATA_FLASH1M, GPIO_NONE, -1 },
-
-	// RockMan EXE 4.5 - Real Operation
-	{ "BR4J", SAVEDATA_FLASH512, GPIO_RTC, -1 },
-
-	// Super Mario Advance 4
-	{ "AX4J", SAVEDATA_FLASH1M, GPIO_NONE, -1 },
-	{ "AX4E", SAVEDATA_FLASH1M, GPIO_NONE, -1 },
-	{ "AX4P", SAVEDATA_FLASH1M, GPIO_NONE, -1 },
-
-	// Wario Ware Twisted
-	{ "RZWJ", SAVEDATA_SRAM, GPIO_RUMBLE | GPIO_GYRO, -1 },
-	{ "RZWE", SAVEDATA_SRAM, GPIO_RUMBLE | GPIO_GYRO, -1 },
-	{ "RZWP", SAVEDATA_SRAM, GPIO_RUMBLE | GPIO_GYRO, -1 },
-
-	// Yoshi's Universal Gravitation
-	{ "KYGJ", SAVEDATA_EEPROM, GPIO_TILT, -1 },
-	{ "KYGE", SAVEDATA_EEPROM, GPIO_TILT, -1 },
-	{ "KYGP", SAVEDATA_EEPROM, GPIO_TILT, -1 },
-
-	{ { 0, 0, 0, 0 }, 0, 0, -1 }
-};
+static const size_t GBA_ROM_MAGIC_OFFSET = 3;
+static const uint8_t GBA_ROM_MAGIC[] = { 0xEA };
 
 static void GBAInit(struct ARMCore* cpu, struct ARMComponent* component);
 static void GBAInterruptHandlerInit(struct ARMInterruptHandler* irqh);
@@ -123,8 +32,10 @@ static void GBAProcessEvents(struct ARMCore* cpu);
 static int32_t GBATimersProcessEvents(struct GBA* gba, int32_t cycles);
 static void GBAHitStub(struct ARMCore* cpu, uint32_t opcode);
 static void GBAIllegal(struct ARMCore* cpu, uint32_t opcode);
+static void GBABreakpoint(struct ARMCore* cpu, int immediate);
 
-static void _checkOverrides(struct GBA* gba, uint32_t code);
+static bool _setSoftwareBreakpoint(struct ARMDebugger*, uint32_t address, enum ExecutionMode mode, uint32_t* opcode);
+static bool _clearSoftwareBreakpoint(struct ARMDebugger*, uint32_t address, enum ExecutionMode mode, uint32_t opcode);
 
 void GBACreate(struct GBA* gba) {
 	gba->d.id = GBA_COMPONENT_MAGIC;
@@ -170,7 +81,12 @@ static void GBAInit(struct ARMCore* cpu, struct ARMComponent* component) {
 
 	gba->biosChecksum = GBAChecksum(gba->memory.bios, SIZE_BIOS);
 
-	gba->busyLoop = -1;
+	gba->idleOptimization = IDLE_LOOP_REMOVE;
+	gba->idleLoop = IDLE_LOOP_NONE;
+	gba->lastJump = 0;
+	gba->idleDetectionStep = 0;
+	gba->idleDetectionFailures = 0;
+	gba->performingDMA = false;
 }
 
 void GBADestroy(struct GBA* gba) {
@@ -200,6 +116,8 @@ void GBAInterruptHandlerInit(struct ARMInterruptHandler* irqh) {
 	irqh->hitIllegal = GBAIllegal;
 	irqh->readCPSR = GBATestIRQ;
 	irqh->hitStub = GBAHitStub;
+	irqh->bkpt16 = GBABreakpoint;
+	irqh->bkpt32 = GBABreakpoint;
 }
 
 void GBAReset(struct ARMCore* cpu) {
@@ -237,7 +155,7 @@ void GBASkipBIOS(struct ARMCore* cpu) {
 static void GBAProcessEvents(struct ARMCore* cpu) {
 	do {
 		struct GBA* gba = (struct GBA*) cpu->master;
-		int32_t cycles = cpu->cycles;
+		int32_t cycles = cpu->nextEvent;
 		int32_t nextEvent = INT_MAX;
 		int32_t testEvent;
 
@@ -371,7 +289,6 @@ static int32_t GBATimersProcessEvents(struct GBA* gba, int32_t cycles) {
 		if (timer->enable) {
 			timer->nextEvent -= cycles;
 			timer->lastEvent -= cycles;
-			nextEvent = timer->nextEvent;
 			if (timer->nextEvent <= 0) {
 				timer->lastEvent = timer->nextEvent;
 				timer->nextEvent += timer->overflowInterval;
@@ -403,7 +320,6 @@ static int32_t GBATimersProcessEvents(struct GBA* gba, int32_t cycles) {
 		if (timer->enable) {
 			timer->nextEvent -= cycles;
 			timer->lastEvent -= cycles;
-			nextEvent = timer->nextEvent;
 			if (timer->nextEvent <= 0) {
 				timer->lastEvent = timer->nextEvent;
 				timer->nextEvent += timer->overflowInterval;
@@ -427,6 +343,8 @@ static int32_t GBATimersProcessEvents(struct GBA* gba, int32_t cycles) {
 }
 
 void GBAAttachDebugger(struct GBA* gba, struct ARMDebugger* debugger) {
+	debugger->setSoftwareBreakpoint = _setSoftwareBreakpoint;
+	debugger->clearSoftwareBreakpoint = _clearSoftwareBreakpoint;
 	gba->debugger = debugger;
 	gba->cpu->components[GBA_COMPONENT_DEBUGGER] = &debugger->d;
 	ARMHotplugAttach(gba->cpu, GBA_COMPONENT_DEBUGGER);
@@ -440,7 +358,7 @@ void GBADetachDebugger(struct GBA* gba) {
 
 void GBALoadROM(struct GBA* gba, struct VFile* vf, struct VFile* sav, const char* fname) {
 	gba->romVf = vf;
-	gba->pristineRomSize = vf->seek(vf, 0, SEEK_END);
+	gba->pristineRomSize = vf->size(vf);
 	vf->seek(vf, 0, SEEK_SET);
 	if (gba->pristineRomSize > SIZE_CART0) {
 		gba->pristineRomSize = SIZE_CART0;
@@ -455,8 +373,7 @@ void GBALoadROM(struct GBA* gba, struct VFile* vf, struct VFile* sav, const char
 	gba->memory.romSize = gba->pristineRomSize;
 	gba->romCrc32 = doCrc32(gba->memory.rom, gba->memory.romSize);
 	GBASavedataInit(&gba->memory.savedata, sav);
-	GBAGPIOInit(&gba->memory.gpio, &((uint16_t*) gba->memory.rom)[GPIO_REG_DATA >> 1]);
-	_checkOverrides(gba, ((struct GBACartridge*) gba->memory.rom)->id);
+	GBAHardwareInit(&gba->memory.hw, &((uint16_t*) gba->memory.rom)[GPIO_REG_DATA >> 1]);
 	// TODO: error check
 }
 
@@ -491,8 +408,7 @@ void GBAApplyPatch(struct GBA* gba, struct Patch* patch) {
 		return;
 	}
 	gba->memory.rom = anonymousMemoryMap(patchedSize);
-	memcpy(gba->memory.rom, gba->pristineRom, gba->memory.romSize > patchedSize ? patchedSize : gba->memory.romSize);
-	if (!patch->applyPatch(patch, gba->memory.rom, patchedSize)) {
+	if (!patch->applyPatch(patch, gba->pristineRom, gba->pristineRomSize, gba->memory.rom, patchedSize)) {
 		mappedMemoryFree(gba->memory.rom, patchedSize);
 		gba->memory.rom = gba->pristineRom;
 		return;
@@ -720,7 +636,11 @@ void GBAHitStub(struct ARMCore* cpu, uint32_t opcode) {
 	enum GBALogLevel level = GBA_LOG_FATAL;
 	if (gba->debugger) {
 		level = GBA_LOG_STUB;
-		ARMDebuggerEnter(gba->debugger, DEBUGGER_ENTER_ILLEGAL_OP);
+		struct DebuggerEntryInfo info = {
+			.address = _ARMPCAddress(cpu),
+			.opcode = opcode
+		};
+		ARMDebuggerEnter(gba->debugger, DEBUGGER_ENTER_ILLEGAL_OP, &info);
 	}
 	GBALog(gba, level, "Stub opcode: %08x", opcode);
 }
@@ -729,46 +649,140 @@ void GBAIllegal(struct ARMCore* cpu, uint32_t opcode) {
 	struct GBA* gba = (struct GBA*) cpu->master;
 	GBALog(gba, GBA_LOG_WARN, "Illegal opcode: %08x", opcode);
 	if (gba->debugger) {
-		ARMDebuggerEnter(gba->debugger, DEBUGGER_ENTER_ILLEGAL_OP);
+		struct DebuggerEntryInfo info = {
+			.address = _ARMPCAddress(cpu),
+			.opcode = opcode
+		};
+		ARMDebuggerEnter(gba->debugger, DEBUGGER_ENTER_ILLEGAL_OP, &info);
 	}
 }
 
-void _checkOverrides(struct GBA* gba, uint32_t id) {
-	int i;
-	gba->busyLoop = -1;
-	if ((id & 0xFF) == 'F') {
-		GBALog(gba, GBA_LOG_DEBUG, "Found Classic NES Series game, using EEPROM saves");
-		GBASavedataInitEEPROM(&gba->memory.savedata);
+void GBABreakpoint(struct ARMCore* cpu, int immediate) {
+	struct GBA* gba = (struct GBA*) cpu->master;
+	if (immediate >= GBA_COMPONENT_MAX) {
 		return;
 	}
-	for (i = 0; _overrides[i].id[0]; ++i) {
-		const uint32_t* overrideId = (const uint32_t*) _overrides[i].id;
-		if (*overrideId == id) {
-			GBALog(gba, GBA_LOG_DEBUG, "Found override for game %s!", _overrides[i].id);
-			GBASavedataForceType(&gba->memory.savedata, _overrides[i].type);
-
-			if (_overrides[i].gpio & GPIO_RTC) {
-				GBAGPIOInitRTC(&gba->memory.gpio);
+	switch (immediate) {
+	case GBA_COMPONENT_DEBUGGER:
+		if (gba->debugger) {
+			struct DebuggerEntryInfo info = {
+				.address = _ARMPCAddress(cpu)
+			};
+			ARMDebuggerEnter(gba->debugger, DEBUGGER_ENTER_BREAKPOINT, &info);
+		}
+		break;
+	case GBA_COMPONENT_CHEAT_DEVICE:
+		if (gba->cpu->components[GBA_COMPONENT_CHEAT_DEVICE]) {
+			struct GBACheatDevice* device = (struct GBACheatDevice*) gba->cpu->components[GBA_COMPONENT_CHEAT_DEVICE];
+			struct GBACheatHook* hook = 0;
+			size_t i;
+			for (i = 0; i < GBACheatSetsSize(&device->cheats); ++i) {
+				struct GBACheatSet* cheats = *GBACheatSetsGetPointer(&device->cheats, i);
+				if (cheats->hook && cheats->hook->address == _ARMPCAddress(cpu)) {
+					GBACheatRefresh(device, cheats);
+					hook = cheats->hook;
+				}
 			}
-
-			if (_overrides[i].gpio & GPIO_GYRO) {
-				GBAGPIOInitGyro(&gba->memory.gpio);
+			if (hook) {
+				ARMRunFake(cpu, hook->patchedOpcode);
 			}
+		}
+		break;
+	default:
+		break;
+	}
+}
 
-			if (_overrides[i].gpio & GPIO_RUMBLE) {
-				GBAGPIOInitRumble(&gba->memory.gpio);
-			}
+void GBAFrameStarted(struct GBA* gba) {
+	UNUSED(gba);
 
-			if (_overrides[i].gpio & GPIO_LIGHT_SENSOR) {
-				GBAGPIOInitLightSensor(&gba->memory.gpio);
-			}
+	struct GBAThread* thread = GBAThreadGetContext();
+	if (!thread) {
+		return;
+	}
 
-			if (_overrides[i].gpio & GPIO_TILT) {
-				GBAGPIOInitTilt(&gba->memory.gpio);
-			}
-
-			gba->busyLoop = _overrides[i].busyLoop;
-			return;
+	if (thread->rewindBuffer) {
+		--thread->rewindBufferNext;
+		if (thread->rewindBufferNext <= 0) {
+			thread->rewindBufferNext = thread->rewindBufferInterval;
+			GBARecordFrame(thread);
 		}
 	}
+}
+
+void GBAFrameEnded(struct GBA* gba) {
+	if (gba->rr) {
+		GBARRNextFrame(gba->rr);
+	}
+
+	if (gba->cpu->components[GBA_COMPONENT_CHEAT_DEVICE]) {
+		struct GBACheatDevice* device = (struct GBACheatDevice*) gba->cpu->components[GBA_COMPONENT_CHEAT_DEVICE];
+		size_t i;
+		for (i = 0; i < GBACheatSetsSize(&device->cheats); ++i) {
+			struct GBACheatSet* cheats = *GBACheatSetsGetPointer(&device->cheats, i);
+			if (!cheats->hook) {
+				GBACheatRefresh(device, cheats);
+			}
+		}
+	}
+
+
+	struct GBAThread* thread = GBAThreadGetContext();
+	if (!thread) {
+		return;
+	}
+
+	if (thread->stream) {
+		thread->stream->postVideoFrame(thread->stream, thread->renderer);
+	}
+
+	if (thread->frameCallback) {
+		thread->frameCallback(thread);
+	}
+}
+
+void GBASetBreakpoint(struct GBA* gba, struct ARMComponent* component, uint32_t address, enum ExecutionMode mode, uint32_t* opcode) {
+	size_t immediate;
+	for (immediate = 0; immediate < gba->cpu->numComponents; ++immediate) {
+		if (gba->cpu->components[immediate] == component) {
+			break;
+		}
+	}
+	if (immediate == gba->cpu->numComponents) {
+		return;
+	}
+	if (mode == MODE_ARM) {
+		int32_t value;
+		int32_t old;
+		value = 0xE1200070;
+		value |= immediate & 0xF;
+		value |= (immediate & 0xFFF0) << 4;
+		GBAPatch32(gba->cpu, address, value, &old);
+		*opcode = old;
+	} else {
+		int16_t value;
+		int16_t old;
+		value = 0xBE00;
+		value |= immediate & 0xFF;
+		GBAPatch16(gba->cpu, address, value, &old);
+		*opcode = (uint16_t) old;
+	}
+}
+
+void GBAClearBreakpoint(struct GBA* gba, uint32_t address, enum ExecutionMode mode, uint32_t opcode) {
+	if (mode == MODE_ARM) {
+		GBAPatch32(gba->cpu, address, opcode, 0);
+	} else {
+		GBAPatch16(gba->cpu, address, opcode, 0);
+	}
+}
+
+static bool _setSoftwareBreakpoint(struct ARMDebugger* debugger, uint32_t address, enum ExecutionMode mode, uint32_t* opcode) {
+	GBASetBreakpoint((struct GBA*) debugger->cpu->master, &debugger->d, address, mode, opcode);
+	return true;
+}
+
+static bool _clearSoftwareBreakpoint(struct ARMDebugger* debugger, uint32_t address, enum ExecutionMode mode, uint32_t opcode) {
+	GBAClearBreakpoint((struct GBA*) debugger->cpu->master, address, mode, opcode);
+	return true;
 }

@@ -1,4 +1,4 @@
-/* Copyright (c) 2013-2014 Jeffrey Pfau
+/* Copyright (c) 2013-2015 Jeffrey Pfau
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -14,7 +14,7 @@
 #include <functional>
 
 extern "C" {
-#include "gba-config.h"
+#include "gba/supervisor/config.h"
 #include "util/configuration.h"
 }
 
@@ -22,6 +22,7 @@ class QAction;
 class QMenu;
 
 struct GBAArguments;
+struct GBACartridgeOverride;
 
 namespace QGBA {
 
@@ -74,6 +75,9 @@ public:
 
 	QList<QString> getMRU() const;
 	void setMRU(const QList<QString>& mru);
+
+	Configuration* overrides() { return GBAConfigGetOverrides(&m_config); }
+	void saveOverride(const GBACartridgeOverride&);
 
 public slots:
 	void setOption(const char* key, bool value);

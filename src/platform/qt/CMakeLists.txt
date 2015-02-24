@@ -37,20 +37,23 @@ endif()
 
 set(SOURCE_FILES
 	AudioProcessor.cpp
+	CheatsModel.cpp
+	CheatsView.cpp
 	ConfigController.cpp
 	Display.cpp
 	GBAApp.cpp
 	GBAKeyEditor.cpp
 	GIFView.cpp
 	GameController.cpp
-	GamePakView.cpp
 	GamepadAxisEvent.cpp
 	GamepadButtonEvent.cpp
 	InputController.cpp
 	KeyEditor.cpp
 	LoadSaveState.cpp
 	LogView.cpp
+	OverrideView.cpp
 	SavestateButton.cpp
+	SensorView.cpp
 	SettingsView.cpp
 	ShortcutController.cpp
 	ShortcutView.cpp
@@ -59,25 +62,34 @@ set(SOURCE_FILES
 	VideoView.cpp)
 
 qt5_wrap_ui(UI_FILES
+	CheatsView.ui
 	GIFView.ui
-	GamePakView.ui
 	LoadSaveState.ui
 	LogView.ui
+	OverrideView.ui
+	SensorView.ui
 	SettingsView.ui
 	ShortcutView.ui
 	VideoView.ui)
 
 set(QT_LIBRARIES)
 set(CPACK_DEBIAN_PACKAGE_DEPENDS "${CPACK_DEBIAN_PACKAGE_DEPENDS},libqt5widgets5,libqt5opengl5" PARENT_SCOPE)
+
+set(AUDIO_SRC)
 if(BUILD_SDL)
-	list(APPEND SOURCE_FILES AudioProcessorSDL.cpp)
-elseif(Qt5Multimedia_FOUND)
-	list(APPEND SOURCE_FILES
+	list(APPEND AUDIO_SRC AudioProcessorSDL.cpp)
+endif()
+
+if(Qt5Multimedia_FOUND)
+	list(APPEND AUDIO_SRC
 		AudioProcessorQt.cpp
 		AudioDevice.cpp)
 	list(APPEND QT_LIBRARIES Qt5::Multimedia)
+	add_definitions(-DBUILD_QT_MULTIMEDIA)
 	set(CPACK_DEBIAN_PACKAGE_DEPENDS "${CPACK_DEBIAN_PACKAGE_DEPENDS},libqt5multimedia5" PARENT_SCOPE)
-else()
+endif()
+
+if(NOT AUDIO_SRC)
 	message(WARNING "No supported audio modules found")
 	set(BUILD_QT OFF PARENT_SCOPE)
 	return()
@@ -96,7 +108,7 @@ qt5_add_resources(RESOURCES resources.qrc)
 if(WIN32)
 	list(APPEND RESOURCES ${CMAKE_SOURCE_DIR}/res/mgba.rc)
 endif()
-add_executable(${BINARY_NAME}-qt WIN32 MACOSX_BUNDLE main.cpp ${CMAKE_SOURCE_DIR}/res/mgba.icns ${SOURCE_FILES} ${PLATFORM_SRC} ${UI_FILES} ${RESOURCES})
+add_executable(${BINARY_NAME}-qt WIN32 MACOSX_BUNDLE main.cpp ${CMAKE_SOURCE_DIR}/res/mgba.icns ${SOURCE_FILES} ${PLATFORM_SRC} ${UI_FILES} ${AUDIO_SRC} ${RESOURCES})
 set_target_properties(${BINARY_NAME}-qt PROPERTIES MACOSX_BUNDLE_INFO_PLIST ${CMAKE_SOURCE_DIR}/res/info.plist.in)
 
 list(APPEND QT_LIBRARIES Qt5::Widgets Qt5::OpenGL)

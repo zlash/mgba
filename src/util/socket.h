@@ -16,7 +16,7 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 
-#define SOCKET_FAILED(s) (s) == INVALID_SOCKET
+#define SOCKET_FAILED(s) ((s) == INVALID_SOCKET)
 typedef SOCKET Socket;
 #else
 #include <fcntl.h>
@@ -25,7 +25,7 @@ typedef SOCKET Socket;
 #include <sys/socket.h>
 
 #define INVALID_SOCKET (-1)
-#define SOCKET_FAILED(s) (s) < 0
+#define SOCKET_FAILED(s) ((s) < 0)
 typedef int Socket;
 #endif
 
@@ -157,7 +157,7 @@ static inline int SocketClose(Socket socket) {
 	return close(socket) >= 0;
 }
 
-static inline int SocketSetBlocking(Socket socket, int blocking) {
+static inline int SocketSetBlocking(Socket socket, bool blocking) {
 #ifdef _WIN32
 	u_long unblocking = !blocking;
 	return ioctlsocket(socket, FIONBIO, &unblocking) == NO_ERROR;
@@ -177,6 +177,76 @@ static inline int SocketSetBlocking(Socket socket, int blocking) {
 
 static inline int SocketSetTCPPush(Socket socket, int push) {
 	return setsockopt(socket, IPPROTO_TCP, TCP_NODELAY, (char*) &push, sizeof(int)) >= 0;
+}
+
+static inline int SocketPoll(size_t nSockets, Socket* reads, Socket* writes, Socket* errors, int64_t timeoutMillis) {
+	fd_set rset;
+	fd_set wset;
+	fd_set eset;
+	FD_ZERO(&rset);
+	FD_ZERO(&wset);
+	FD_ZERO(&eset);
+	size_t i;
+	Socket maxFd = 0;
+	if (reads) {
+		for (i = 0; i < nSockets; ++i) {
+			if (SOCKET_FAILED(reads[i])) {
+				break;
+			}
+			if (reads[i] > maxFd) {
+				maxFd = reads[i];
+			}
+			FD_SET(reads[i], &rset);
+			reads[i] = INVALID_SOCKET;
+		}
+	}
+	if (writes) {
+		for (i = 0; i < nSockets; ++i) {
+			if (SOCKET_FAILED(writes[i])) {
+				break;
+			}
+			if (writes[i] > maxFd) {
+				maxFd = writes[i];
+			}
+			FD_SET(writes[i], &wset);
+			writes[i] = INVALID_SOCKET;
+		}
+	}
+	if (errors) {
+		for (i = 0; i < nSockets; ++i) {
+			if (SOCKET_FAILED(errors[i])) {
+				break;
+			}
+			if (errors[i] > maxFd) {
+				maxFd = errors[i];
+			}
+			FD_SET(errors[i], &eset);
+			errors[i] = INVALID_SOCKET;
+		}
+	}
+	struct timeval tv;
+	tv.tv_sec = timeoutMillis / 1000;
+	tv.tv_usec = (timeoutMillis % 1000) * 1000;
+	int result = select(maxFd, &rset, &wset, &eset, timeoutMillis < 0 ? 0 : &tv);
+	int r = 0;
+	int w = 0;
+	int e = 0;
+	Socket j;
+	for (j = 0; j < maxFd; ++j) {
+		if (reads && FD_ISSET(j, &rset)) {
+			reads[r] = j;
+			++r;
+		}
+		if (writes && FD_ISSET(j, &wset)) {
+			writes[w] = j;
+			++w;
+		}
+		if (errors && FD_ISSET(j, &eset)) {
+			errors[e] = j;
+			++e;
+		}
+	}
+	return result;
 }
 
 #endif

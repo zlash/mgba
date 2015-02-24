@@ -1,4 +1,4 @@
-/* Copyright (c) 2013-2014 Jeffrey Pfau
+/* Copyright (c) 2013-2015 Jeffrey Pfau
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -13,15 +13,18 @@
 #include <QString>
 
 extern "C" {
-#include "gba-sensors.h"
-#include "gba-thread.h"
+#include "gba/cheats.h"
+#include "gba/hardware.h"
+#include "gba/supervisor/thread.h"
 #ifdef BUILD_SDL
 #include "sdl-events.h"
 #endif
 }
 
 struct GBAAudio;
+struct GBAOptions;
 struct GBAVideoSoftwareRenderer;
+struct Configuration;
 
 class QThread;
 
@@ -42,6 +45,7 @@ public:
 
 	const uint32_t* drawContext() const { return m_drawContext; }
 	GBAThread* thread() { return &m_threadContext; }
+	GBACheatDevice* cheatDevice() { return &m_cheatDevice; }
 
 	void threadInterrupt();
 	void threadContinue();
@@ -53,6 +57,12 @@ public:
 	bool videoSync() const { return m_videoSync; }
 
 	void setInputController(InputController* controller) { m_inputController = controller; }
+	void setOverrides(Configuration* overrides) { m_threadContext.overrides = overrides; }
+
+	void setOverride(const GBACartridgeOverride& override);
+	void clearOverride() { m_threadContext.hasOverride = false; }
+
+	void setOptions(const GBAOptions*);
 
 #ifdef USE_GDB_STUB
 	ARMDebugger* debugger();
@@ -66,6 +76,7 @@ signals:
 	void gamePaused(GBAThread*);
 	void gameUnpaused(GBAThread*);
 	void gameCrashed(const QString& errorMessage);
+	void gameFailed();
 	void stateLoaded(GBAThread*);
 
 	void postLog(int level, const QString& log);
@@ -95,7 +106,12 @@ public slots:
 	void setTurbo(bool, bool forced = true);
 	void setAVStream(GBAAVStream*);
 	void clearAVStream();
-	void setLuminanceValue(uint8_t value) { m_luxValue = value; }
+	void reloadAudioDriver();
+
+	void setLuminanceValue(uint8_t value);
+	void setLuminanceLevel(int level);
+	void increaseLuminanceLevel() { setLuminanceLevel(m_luxLevel + 1); }
+	void decreaseLuminanceLevel() { setLuminanceLevel(m_luxLevel - 1); }
 
 	void setRealTime();
 	void setFixedTime(const QDateTime& time);
@@ -123,6 +139,7 @@ private:
 	uint32_t* m_drawContext;
 	GBAThread m_threadContext;
 	GBAVideoSoftwareRenderer* m_renderer;
+	GBACheatDevice m_cheatDevice;
 	int m_activeKeys;
 	int m_logLevels;
 
@@ -151,6 +168,9 @@ private:
 		uint8_t value;
 	} m_lux;
 	uint8_t m_luxValue;
+	int m_luxLevel;
+
+	static const int LUX_LEVELS[10];
 
 	struct GameControllerRTC : GBARTCSource {
 		GameController* p;

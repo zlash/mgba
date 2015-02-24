@@ -1,4 +1,4 @@
-/* Copyright (c) 2013-2014 Jeffrey Pfau
+/* Copyright (c) 2013-2015 Jeffrey Pfau
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -11,10 +11,10 @@
 #include "arm.h"
 #include "debugger/debugger.h"
 
-#include "gba-memory.h"
-#include "gba-video.h"
-#include "gba-audio.h"
-#include "gba-sio.h"
+#include "gba/memory.h"
+#include "gba/video.h"
+#include "gba/audio.h"
+#include "gba/sio.h"
 
 extern const uint32_t GBA_ARM7TDMI_FREQUENCY;
 
@@ -73,7 +73,14 @@ enum GBAKey {
 
 enum GBAComponent {
 	GBA_COMPONENT_DEBUGGER,
+	GBA_COMPONENT_CHEAT_DEVICE,
 	GBA_COMPONENT_MAX
+};
+
+enum GBAIdleLoopOptimization {
+	IDLE_LOOP_IGNORE = -1,
+	IDLE_LOOP_REMOVE = 0,
+	IDLE_LOOP_DETECT
 };
 
 enum {
@@ -113,6 +120,7 @@ struct GBA {
 	struct ARMDebugger* debugger;
 
 	uint32_t bus;
+	bool performingDMA;
 
 	int timersEnabled;
 	struct GBATimer timers[4];
@@ -120,7 +128,6 @@ struct GBA {
 	int springIRQ;
 	uint32_t biosChecksum;
 	int* keySource;
-	uint32_t busyLoop;
 	struct GBARotationSource* rotationSource;
 	struct GBALuminanceSource* luminanceSource;
 	struct GBARTCSource* rtcSource;
@@ -136,6 +143,14 @@ struct GBA {
 	const char* activeFile;
 
 	int logLevel;
+
+	enum GBAIdleLoopOptimization idleOptimization;
+	uint32_t idleLoop;
+	uint32_t lastJump;
+	int idleDetectionStep;
+	int idleDetectionFailures;
+	int32_t cachedRegisters[16];
+	bool taintedRegisters[16];
 };
 
 struct GBACartridge {
@@ -172,6 +187,9 @@ void GBAHalt(struct GBA* gba);
 void GBAAttachDebugger(struct GBA* gba, struct ARMDebugger* debugger);
 void GBADetachDebugger(struct GBA* gba);
 
+void GBASetBreakpoint(struct GBA* gba, struct ARMComponent* component, uint32_t address, enum ExecutionMode mode, uint32_t* opcode);
+void GBAClearBreakpoint(struct GBA* gba, uint32_t address, enum ExecutionMode mode, uint32_t opcode);
+
 void GBALoadROM(struct GBA* gba, struct VFile* vf, struct VFile* sav, const char* fname);
 void GBALoadBIOS(struct GBA* gba, struct VFile* vf);
 void GBAApplyPatch(struct GBA* gba, struct Patch* patch);
@@ -180,6 +198,9 @@ bool GBAIsROM(struct VFile* vf);
 bool GBAIsBIOS(struct VFile* vf);
 void GBAGetGameCode(struct GBA* gba, char* out);
 void GBAGetGameTitle(struct GBA* gba, char* out);
+
+void GBAFrameStarted(struct GBA* gba);
+void GBAFrameEnded(struct GBA* gba);
 
 __attribute__((format (printf, 3, 4)))
 void GBALog(struct GBA* gba, enum GBALogLevel level, const char* format, ...);

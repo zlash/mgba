@@ -1,12 +1,14 @@
-/* Copyright (c) 2013-2014 Jeffrey Pfau
+/* Copyright (c) 2013-2015 Jeffrey Pfau
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 #include "video-software.h"
 
-#include "gba.h"
-#include "gba-io.h"
+#include "gba/gba.h"
+#include "gba/io.h"
+
+#include "util/arm-algo.h"
 
 #ifdef NDEBUG
 #define VIDEO_CHECKS false
@@ -859,16 +861,17 @@ static inline void _compositeNoBlendNoObjwin(struct GBAVideoSoftwareRenderer* re
 		localY = 7 - localY; \
 	}
 
+// TODO: Remove UNUSEDs after implementing OBJWIN for modes 3 - 5
 #define PREPARE_OBJWIN \
 	int objwinSlowPath = GBARegisterDISPCNTIsObjwinEnable(renderer->dispcnt); \
 	int objwinOnly = 0; \
 	int objwinForceEnable = 0; \
-	color_t* objwinPalette; \
+	UNUSED(objwinForceEnable); \
+	color_t* objwinPalette = renderer->normalPalette; \
+	UNUSED(objwinPalette); \
 	if (objwinSlowPath) { \
 		if (background->target1 && GBAWindowControlIsBlendEnable(renderer->objwin.packed) && (renderer->blendEffect == BLEND_BRIGHTEN || renderer->blendEffect == BLEND_DARKEN)) { \
 			objwinPalette = renderer->variantPalette; \
-		} else { \
-			objwinPalette = renderer->normalPalette; \
 		} \
 		switch (background->index) { \
 		case 0: \
@@ -1010,6 +1013,10 @@ static inline void _compositeNoBlendNoObjwin(struct GBAVideoSoftwareRenderer* re
 		paletteData = GBA_TEXT_MAP_PALETTE(mapData) << 4; \
 		palette = &mainPalette[paletteData]; \
 		charBase = (background->charBase + (GBA_TEXT_MAP_TILE(mapData) << 5)) + (localY << 2); \
+		if (UNLIKELY(charBase >= 0x10000)) { \
+			pixel += 8; \
+			continue; \
+		} \
 		LOAD_32(tileData, charBase, vram); \
 		if (tileData) { \
 			if (!GBA_TEXT_MAP_HFLIP(mapData)) { \
@@ -1058,35 +1065,43 @@ static inline void _compositeNoBlendNoObjwin(struct GBAVideoSoftwareRenderer* re
 	int end2 = end - 4; \
 	if (!GBA_TEXT_MAP_HFLIP(mapData)) { \
 		int shift = inX & 0x3; \
-		if (end2 > outX) { \
-			LOAD_32(tileData, charBase, vram); \
-			tileData >>= 8 * shift; \
-			shift = 0; \
-			for (; outX < end2; ++outX, ++pixel) { \
-				BACKGROUND_DRAW_PIXEL_256(BLEND, OBJWIN); \
+		if (LIKELY(charBase < 0x10000)) { \
+			if (end2 > outX) { \
+				LOAD_32(tileData, charBase, vram); \
+				tileData >>= 8 * shift; \
+				shift = 0; \
+				for (; outX < end2; ++outX, ++pixel) { \
+					BACKGROUND_DRAW_PIXEL_256(BLEND, OBJWIN); \
+				} \
 			} \
 		} \
 		\
-		LOAD_32(tileData, charBase + 4, vram); \
-		tileData >>= 8 * shift; \
-		for (; outX < end; ++outX, ++pixel) { \
-			BACKGROUND_DRAW_PIXEL_256(BLEND, OBJWIN); \
+		if (LIKELY(charBase < 0x10000)) { \
+			LOAD_32(tileData, charBase + 4, vram); \
+			tileData >>= 8 * shift; \
+			for (; outX < end; ++outX, ++pixel) { \
+				BACKGROUND_DRAW_PIXEL_256(BLEND, OBJWIN); \
+			} \
 		} \
 	} else { \
 		int start = outX; \
 		outX = end - 1; \
 		pixel = &renderer->row[outX]; \
-		if (end2 > start) { \
-			LOAD_32(tileData, charBase, vram); \
-			for (; outX >= end2; --outX, --pixel) { \
-				BACKGROUND_DRAW_PIXEL_256(BLEND, OBJWIN); \
+		if (LIKELY(charBase < 0x10000)) { \
+			if (end2 > start) { \
+				LOAD_32(tileData, charBase, vram); \
+				for (; outX >= end2; --outX, --pixel) { \
+					BACKGROUND_DRAW_PIXEL_256(BLEND, OBJWIN); \
+				} \
+				charBase += 4; \
 			} \
-			charBase += 4; \
 		} \
 		\
-		LOAD_32(tileData, charBase, vram); \
-		for (; outX >= renderer->start; --outX, --pixel) { \
-			BACKGROUND_DRAW_PIXEL_256(BLEND, OBJWIN); \
+		if (LIKELY(charBase < 0x10000)) { \
+			LOAD_32(tileData, charBase, vram); \
+			for (; outX >= renderer->start; --outX, --pixel) { \
+				BACKGROUND_DRAW_PIXEL_256(BLEND, OBJWIN); \
+			} \
 		} \
 		outX = end; \
 		pixel = &renderer->row[outX]; \
@@ -1094,6 +1109,9 @@ static inline void _compositeNoBlendNoObjwin(struct GBAVideoSoftwareRenderer* re
 
 #define DRAW_BACKGROUND_MODE_0_TILE_PREFIX_256(BLEND, OBJWIN) \
 	charBase = (background->charBase + (GBA_TEXT_MAP_TILE(mapData) << 6)) + (localY << 3); \
+	if (UNLIKELY(charBase >= 0x10000)) { \
+		return; \
+	} \
 	int end = mod8 - 4; \
 	pixel = &renderer->row[outX]; \
 	if (!GBA_TEXT_MAP_HFLIP(mapData)) { \
@@ -1139,6 +1157,10 @@ static inline void _compositeNoBlendNoObjwin(struct GBAVideoSoftwareRenderer* re
 	for (; tileX < tileEnd; ++tileX) { \
 		BACKGROUND_TEXT_SELECT_CHARACTER; \
 		charBase = (background->charBase + (GBA_TEXT_MAP_TILE(mapData) << 6)) + (localY << 3); \
+		if (UNLIKELY(charBase >= 0x10000)) { \
+			pixel += 8; \
+			continue; \
+		} \
 		if (!GBA_TEXT_MAP_HFLIP(mapData)) { \
 			LOAD_32(tileData, charBase, vram); \
 			if (tileData) { \
@@ -1405,6 +1427,7 @@ static void _drawBackgroundMode0(struct GBAVideoSoftwareRenderer* renderer, stru
 	if (variant) { \
 		palette = renderer->variantPalette; \
 	} \
+	UNUSED(palette); \
 	PREPARE_OBJWIN;
 
 #define BACKGROUND_BITMAP_ITERATE(W, H) \

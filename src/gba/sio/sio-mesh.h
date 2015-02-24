@@ -6,7 +6,7 @@
 #ifndef SIO_MESH_H
 #define SIO_MESH_H
 
-#include "gba-sio.h"
+#include "gba/sio.h"
 
 #include "util/socket.h"
 #include "util/threading.h"

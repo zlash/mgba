@@ -9,11 +9,15 @@ set(USE_PNG ON CACHE BOOL "Whether or not to enable PNG support")
 set(USE_LIBZIP ON CACHE BOOL "Whether or not to enable ZIP support")
 set(USE_MAGICK ON CACHE BOOL "Whether or not to enable ImageMagick support")
 set(USE_BLIP ON CACHE BOOL "Whether or not to enable blip_buf support")
+set(USE_LZMA ON CACHE BOOL "Whether or not to enable 7-Zip support")
 set(BUILD_QT ON CACHE BOOL "Build Qt frontend")
 set(BUILD_SDL ON CACHE BOOL "Build SDL frontend")
 set(BUILD_PERF OFF CACHE BOOL "Build performance profiling tool")
+set(BUILD_STATIC OFF CACHE BOOL "Build a static library")
+set(BUILD_SHARED ON CACHE BOOL "Build a shared library")
 file(GLOB ARM_SRC ${CMAKE_SOURCE_DIR}/src/arm/*.c)
 file(GLOB GBA_SRC ${CMAKE_SOURCE_DIR}/src/gba/*.c)
+file(GLOB GBA_SV_SRC ${CMAKE_SOURCE_DIR}/src/gba/supervisor/*.c)
 file(GLOB UTIL_SRC ${CMAKE_SOURCE_DIR}/src/util/*.[cSs])
 file(GLOB VFS_SRC ${CMAKE_SOURCE_DIR}/src/util/vfs/*.c)
 file(GLOB RENDERER_SRC ${CMAKE_SOURCE_DIR}/src/gba/renderers/video-software.c)
@@ -22,14 +26,16 @@ list(APPEND UTIL_SRC ${CMAKE_SOURCE_DIR}/src/platform/commandline.c)
 file(GLOB SIO_SRC ${CMAKE_SOURCE_DIR}/src/gba/sio/*.c)
 source_group("ARM core" FILES ${ARM_SRC})
 source_group("GBA board" FILES ${GBA_SRC} ${RENDERER_SRC} ${SIO_SRC})
+source_group("GBA supervisor" FILES ${GBA_SV_SRC})
 source_group("Utilities" FILES ${UTIL_SRC} ${VFS_SRC}})
 include_directories(${CMAKE_SOURCE_DIR}/src/arm)
-include_directories(${CMAKE_SOURCE_DIR}/src/gba)
 include_directories(${CMAKE_SOURCE_DIR}/src)
 
 if(NOT CMAKE_BUILD_TYPE)
 	set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type (e.g. Release or Debug)" FORCE)
 endif()
+
+set(CMAKE_INSTALL_RPATH "${CMAKE_INSTALL_PREFIX}/lib")
 
 include(GNUInstallDirs)
 
@@ -89,18 +95,15 @@ endif()
 add_definitions(-DBINARY_NAME="${BINARY_NAME}" -DPROJECT_NAME="${PROJECT_NAME}" -DPROJECT_VERSION="${LIB_VERSION_STRING}")
 
 # Feature dependencies
-find_feature(USE_CLI_DEBUGGER "libedit")
+if(CMAKE_SYSTEM_NAME MATCHES .*BSD)
+	set(LIBEDIT_LIBRARIES -ledit)
+else()
+	find_feature(USE_CLI_DEBUGGER "libedit")
+endif()
 find_feature(USE_FFMPEG "libavcodec;libavformat;libavresample;libavutil;libswscale")
 find_feature(USE_PNG "ZLIB;PNG")
 find_feature(USE_LIBZIP "libzip")
 find_feature(USE_MAGICK "MagickWand")
-
-include(CheckFunctionExists)
-check_function_exists(strndup HAVE_STRNDUP)
-
-if(HAVE_STRNDUP)
-	add_definitions(-DHAVE_STRNDUP)
-endif()
 
 # Platform support
 if(WIN32)
@@ -110,13 +113,20 @@ if(WIN32)
 	source_group("Windows-specific code" FILES ${OS_SRC})
 else()
 	add_definitions(-DUSE_PTHREADS)
-	list(APPEND OS_LIB pthread)
+	if(NOT APPLE)
+		set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -pthread")
+	endif()
 	file(GLOB OS_SRC ${CMAKE_SOURCE_DIR}/src/platform/posix/*.c)
 	source_group("POSIX-specific code" FILES ${OS_SRC})
 endif()
 
 if(APPLE)
 	set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -mmacosx-version-min=10.6")
+endif()
+
+if(APPLE OR CMAKE_C_COMPILER_ID STREQUAL "GNU")
+	set(CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE} -flto")
+	set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -flto")
 endif()
 
 if(BUILD_BBB OR BUILD_RASPI)
@@ -126,6 +136,34 @@ if(BUILD_BBB OR BUILD_RASPI)
 	endif()
 endif()
 
+include(CheckFunctionExists)
+check_function_exists(strndup HAVE_STRNDUP)
+check_function_exists(snprintf_l HAVE_SNPRINTF_L)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+	# The strtof_l on Linux not actually exposed nor actually strtof_l
+	set(HAVE_STRTOF_L OFF)
+else()
+	check_function_exists(strtof_l HAVE_STRTOF_L)
+endif()
+check_function_exists(newlocale HAVE_NEWLOCALE)
+check_function_exists(freelocale HAVE_FREELOCALE)
+check_function_exists(uselocale HAVE_USELOCALE)
+
+if(HAVE_STRNDUP)
+	add_definitions(-DHAVE_STRNDUP)
+endif()
+
+if(HAVE_NEWLOCALE AND HAVE_FREELOCALE AND HAVE_USELOCALE)
+	add_definitions(-DHAVE_LOCALE)
+	if (HAVE_STRTOF_L)
+		add_definitions(-DHAVE_STRTOF_L)
+	endif()
+	if (HAVE_SNPRINTF_L)
+		add_definitions(-DHAVE_SNPRINTF_L)
+	endif()
+endif()
+
+
 # Features
 set(DEBUGGER_SRC ${CMAKE_SOURCE_DIR}/src/debugger/debugger.c ${CMAKE_SOURCE_DIR}/src/debugger/memory-debugger.c)
 set(CPACK_DEBIAN_PACKAGE_DEPENDS "libc6")
@@ -134,7 +172,7 @@ if(USE_CLI_DEBUGGER)
 	add_definitions(-DUSE_CLI_DEBUGGER)
 	list(APPEND DEBUGGER_SRC ${CMAKE_SOURCE_DIR}/src/debugger/cli-debugger.c)
 	list(APPEND DEBUGGER_SRC ${CMAKE_SOURCE_DIR}/src/debugger/parser.c)
-	list(APPEND DEBUGGER_SRC ${CMAKE_SOURCE_DIR}/src/gba/gba-cli.c)
+	list(APPEND DEBUGGER_SRC ${CMAKE_SOURCE_DIR}/src/gba/supervisor/cli.c)
 	include_directories(AFTER ${LIBEDIT_INCLUDE_DIRS})
 	link_directories(${LIBEDIT_LIBRARY_DIRS})
 	set(DEBUGGER_LIB ${LIBEDIT_LIBRARIES})
@@ -205,10 +243,37 @@ if(USE_LIBZIP)
 	set(CPACK_DEBIAN_PACKAGE_DEPENDS "${CPACK_DEBIAN_PACKAGE_DEPENDS},libzip2")
 endif()
 
+if (USE_LZMA)
+	include_directories(AFTER ${CMAKE_SOURCE_DIR}/third-party/lzma)
+	add_definitions(-D_7ZIP_PPMD_SUPPPORT)
+	set(LZMA_SRC
+		${CMAKE_SOURCE_DIR}/src/util/vfs/vfs-lzma.c
+		${CMAKE_SOURCE_DIR}/src/third-party/lzma/7zAlloc.c
+		${CMAKE_SOURCE_DIR}/src/third-party/lzma/7zArcIn.c
+		${CMAKE_SOURCE_DIR}/src/third-party/lzma/7zBuf.c
+		${CMAKE_SOURCE_DIR}/src/third-party/lzma/7zBuf2.c
+		${CMAKE_SOURCE_DIR}/src/third-party/lzma/7zCrc.c
+		${CMAKE_SOURCE_DIR}/src/third-party/lzma/7zCrcOpt.c
+		${CMAKE_SOURCE_DIR}/src/third-party/lzma/7zDec.c
+		${CMAKE_SOURCE_DIR}/src/third-party/lzma/CpuArch.c
+		${CMAKE_SOURCE_DIR}/src/third-party/lzma/LzmaDec.c
+		${CMAKE_SOURCE_DIR}/src/third-party/lzma/Lzma2Dec.c
+		${CMAKE_SOURCE_DIR}/src/third-party/lzma/Bra.c
+		${CMAKE_SOURCE_DIR}/src/third-party/lzma/Bra86.c
+		${CMAKE_SOURCE_DIR}/src/third-party/lzma/Bcj2.c
+		${CMAKE_SOURCE_DIR}/src/third-party/lzma/Ppmd7.c
+		${CMAKE_SOURCE_DIR}/src/third-party/lzma/Ppmd7Dec.c
+		${CMAKE_SOURCE_DIR}/src/third-party/lzma/7zFile.c
+		${CMAKE_SOURCE_DIR}/src/third-party/lzma/7zStream.c)
+	list(APPEND UTIL_SRC ${LZMA_SRC})
+	add_definitions(-DENABLE_LZMA)
+endif()
+
 # Binaries
-add_library(${BINARY_NAME} SHARED
+set(SRC
 	${ARM_SRC}
 	${GBA_SRC}
+	${GBA_SV_SRC}
 	${DEBUGGER_SRC}
 	${RENDERER_SRC}
 	${SIO_SRC}
@@ -216,6 +281,21 @@ add_library(${BINARY_NAME} SHARED
 	${VFS_SRC}
 	${OS_SRC}
 	${THIRD_PARTY_SRC})
+
+if(NOT BUILD_STATIC AND NOT BUILD_SHARED)
+	set(BUILD_SHARED ON)
+endif()
+
+if(BUILD_SHARED)
+	add_library(${BINARY_NAME} SHARED ${SRC})
+	if(BUILD_STATIC)
+		add_library(${BINARY_NAME}-static STATIC ${SRC})
+		install(TARGETS ${BINARY_NAME}-static DESTINATION lib COMPONENT lib${BINARY_NAME})
+	endif()
+else()
+	add_library(${BINARY_NAME} STATIC ${SRC})
+endif()
+
 target_link_libraries(${BINARY_NAME} m ${DEBUGGER_LIB} ${OS_LIB} ${DEPENDENCY_LIB})
 install(TARGETS ${BINARY_NAME} DESTINATION lib COMPONENT lib${BINARY_NAME})
 set_target_properties(${BINARY_NAME} PROPERTIES VERSION ${LIB_VERSION_STRING} SOVERSION ${LIB_VERSION_ABI})
@@ -246,14 +326,19 @@ set(CPACK_PACKAGE_VERSION_MAJOR ${LIB_VERSION_MAJOR})
 set(CPACK_PACKAGE_VERSION_MINOR ${LIB_VERSION_MINOR})
 set(CPACK_PACKAGE_VERSION_PATCH ${LIB_VERSION_PATCH})
 set(CPACK_RESOURCE_FILE_LICENSE ${CMAKE_SOURCE_DIR}/LICENSE)
-set(CPACK_RESOURCE_FILE_README ${CMAKE_SOURCE_DIR}/LICENSE)
+set(CPACK_RESOURCE_FILE_README ${CMAKE_SOURCE_DIR}/README.md)
 
 set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "mGBA Game Boy Advance Emulator")
 set(CPACK_PACKAGE_VENDOR "Jeffrey Pfau")
 set(CPACK_PACKAGE_CONTACT "Jeffrey Pfau <jeffrey@endrift.com>")
 set(CPACK_PACKAGE_DESCRIPTION_FILE "${CMAKE_SOURCE_DIR}/README.md")
+set(CPACK_DEBIAN_PACKAGE_SECTION "games")
+
+SET(CPACK_DEB_COMPONENT_INSTALL ON)
 
 set(CPACK_STRIP_FILES ${BINARY_NAME})
+
+install(FILES ${CMAKE_SOURCE_DIR}/README.md ${CMAKE_SOURCE_DIR}/CHANGES DESTINATION ${CMAKE_INSTALL_DOCDIR} COMPONENT lib${BINARY_NAME})
 
 include(CPack)
 
@@ -265,8 +350,12 @@ message(STATUS "	Video recording: ${USE_FFMPEG}")
 message(STATUS "	GIF recording: ${USE_MAGICK}")
 message(STATUS "	Screenshot/advanced savestate support: ${USE_PNG}")
 message(STATUS "	ZIP support: ${USE_LIBZIP}")
+message(STATUS "	7-Zip support: ${USE_LZMA}")
 message(STATUS "	Better audio resampling: ${USE_BLIP}")
 message(STATUS "Frontend summary:")
 message(STATUS "	Qt: ${BUILD_QT}")
 message(STATUS "	SDL (${SDL_VERSION}): ${BUILD_SDL}")
 message(STATUS "	Profiling: ${BUILD_PERF}")
+message(STATUS "Library summary:")
+message(STATUS "	Static: ${BUILD_STATIC}")
+message(STATUS "	Shared: ${BUILD_SHARED}")

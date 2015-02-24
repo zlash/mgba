@@ -27,8 +27,8 @@
 #define ARM_COND_AL 1
 
 #define ARM_SIGN(I) ((I) >> 31)
-#define ARM_ROR(I, ROTATE) ((((uint32_t) (I)) >> ROTATE) | ((uint32_t) (I) << ((-ROTATE) & 31)))
-
+#define ARM_SXT_8(I) (((int8_t) (I) << 24) >> 24)
+#define ARM_SXT_16(I) (((int16_t) (I) << 16) >> 16)
 
 #define ARM_CARRY_FROM(M, N, D) (((uint32_t) (M) >> 31) + ((uint32_t) (N) >> 31) > ((uint32_t) (D) >> 31))
 #define ARM_BORROW_FROM(M, N, D) (((uint32_t) (M)) >= ((uint32_t) (N)))
@@ -89,6 +89,17 @@ static inline void _ARMReadCPSR(struct ARMCore* cpu) {
 	_ARMSetMode(cpu, cpu->cpsr.t);
 	ARMSetPrivilegeMode(cpu, cpu->cpsr.priv);
 	cpu->irqh.readCPSR(cpu);
+}
+
+static inline uint32_t _ARMPCAddress(struct ARMCore* cpu) {
+	int instructionLength;
+	enum ExecutionMode mode = cpu->cpsr.t;
+	if (mode == MODE_ARM) {
+		instructionLength = WORD_SIZE_ARM;
+	} else {
+		instructionLength = WORD_SIZE_THUMB;
+	}
+	return cpu->gprs[ARM_PC] - instructionLength * 2;
 }
 
 #endif

@@ -6,21 +6,25 @@
 #include "Window.h"
 
 #include <QFileDialog>
+#include <QFileInfo>
 #include <QKeyEvent>
 #include <QKeySequence>
 #include <QMenuBar>
 #include <QMessageBox>
+#include <QMimeData>
 #include <QStackedLayout>
 
+#include "CheatsView.h"
 #include "ConfigController.h"
 #include "GameController.h"
 #include "GBAKeyEditor.h"
 #include "GDBController.h"
 #include "GDBWindow.h"
 #include "GIFView.h"
-#include "GamePakView.h"
 #include "LoadSaveState.h"
 #include "LogView.h"
+#include "OverrideView.h"
+#include "SensorView.h"
 #include "SettingsView.h"
 #include "ShortcutController.h"
 #include "ShortcutView.h"
@@ -53,16 +57,23 @@ Window::Window(ConfigController* config, QWidget* parent)
 {
 	setWindowTitle(PROJECT_NAME);
 	setFocusPolicy(Qt::StrongFocus);
+	setAcceptDrops(true);
 	m_controller = new GameController(this);
 	m_controller->setInputController(&m_inputController);
+	m_controller->setOverrides(m_config->overrides());
 
 	QGLFormat format(QGLFormat(QGL::Rgba | QGL::DoubleBuffer));
 	format.setSwapInterval(1);
 	m_display = new Display(format);
 
+	m_logo.setDevicePixelRatio(m_screenWidget->devicePixelRatio());
+	m_logo = m_logo; // Free memory left over in old pixmap
+
 	m_screenWidget->setMinimumSize(m_display->minimumSize());
 	m_screenWidget->setSizePolicy(m_display->sizePolicy());
 	m_screenWidget->setSizeHint(m_display->minimumSize() * 2);
+	m_screenWidget->setPixmap(m_logo);
+	m_screenWidget->setLockAspectRatio(m_logo.width(), m_logo.height());
 	setCentralWidget(m_screenWidget);
 
 	connect(m_controller, SIGNAL(gameStarted(GBAThread*)), this, SLOT(gameStarted(GBAThread*)));
@@ -82,6 +93,7 @@ Window::Window(ConfigController* config, QWidget* parent)
 	connect(m_controller, SIGNAL(postLog(int, const QString&)), m_logView, SLOT(postLog(int, const QString&)));
 	connect(m_controller, SIGNAL(frameAvailable(const uint32_t*)), this, SLOT(recordFrame()));
 	connect(m_controller, SIGNAL(gameCrashed(const QString&)), this, SLOT(gameCrashed(const QString&)));
+	connect(m_controller, SIGNAL(gameFailed()), this, SLOT(gameFailed()));
 	connect(m_logView, SIGNAL(levelsSet(int)), m_controller, SLOT(setLogLevel(int)));
 	connect(m_logView, SIGNAL(levelsEnabled(int)), m_controller, SLOT(enableLogLevel(int)));
 	connect(m_logView, SIGNAL(levelsDisabled(int)), m_controller, SLOT(disableLogLevel(int)));
@@ -140,11 +152,7 @@ void Window::loadConfig() {
 
 	m_logView->setLevels(opts->logLevel);
 
-	m_controller->setFrameskip(opts->frameskip);
-	m_controller->setAudioSync(opts->audioSync);
-	m_controller->setVideoSync(opts->videoSync);
-	m_controller->setSkipBIOS(opts->skipBios);
-	m_controller->setRewind(opts->rewindEnable, opts->rewindBufferCapacity, opts->rewindBufferInterval);
+	m_controller->setOptions(opts);
 	m_display->lockAspectRatio(opts->lockAspectRatio);
 	m_display->filter(opts->resampleVideo);
 
@@ -175,15 +183,17 @@ void Window::saveConfig() {
 }
 
 void Window::selectROM() {
-	QString filename = QFileDialog::getOpenFileName(this, tr("Select ROM"));
+	QString filename = QFileDialog::getOpenFileName(this, tr("Select ROM"), m_config->getQtOption("lastDirectory").toString(), tr("Game Boy Advance ROMs (*.gba *.zip *.rom *.bin)"));
 	if (!filename.isEmpty()) {
+		m_config->setQtOption("lastDirectory", QFileInfo(filename).dir().path());
 		m_controller->loadGame(filename);
 	}
 }
 
 void Window::selectBIOS() {
-	QString filename = QFileDialog::getOpenFileName(this, tr("Select BIOS"));
+	QString filename = QFileDialog::getOpenFileName(this, tr("Select BIOS"), m_config->getQtOption("lastDirectory").toString());
 	if (!filename.isEmpty()) {
+		m_config->setQtOption("lastDirectory", QFileInfo(filename).dir().path());
 		m_config->setOption("bios", filename);
 		m_config->updateOption("bios");
 		m_controller->loadBIOS(filename);
@@ -191,8 +201,9 @@ void Window::selectBIOS() {
 }
 
 void Window::selectPatch() {
-	QString filename = QFileDialog::getOpenFileName(this, tr("Select patch"), QString(), tr("Patches (*.ips *.ups)"));
+	QString filename = QFileDialog::getOpenFileName(this, tr("Select patch"), m_config->getQtOption("lastDirectory").toString(), tr("Patches (*.ips *.ups *.bps)"));
 	if (!filename.isEmpty()) {
+		m_config->setQtOption("lastDirectory", QFileInfo(filename).dir().path());
 		m_controller->loadPatch(filename);
 	}
 }
@@ -208,6 +219,7 @@ void Window::openSettingsWindow() {
 	SettingsView* settingsWindow = new SettingsView(m_config);
 	connect(this, SIGNAL(shutdown()), settingsWindow, SLOT(close()));
 	connect(settingsWindow, SIGNAL(biosLoaded(const QString&)), m_controller, SLOT(loadBIOS(const QString&)));
+	connect(settingsWindow, SIGNAL(audioDriverChanged()), m_controller, SLOT(reloadAudioDriver()));
 	settingsWindow->setAttribute(Qt::WA_DeleteOnClose);
 	settingsWindow->show();
 }
@@ -220,11 +232,25 @@ void Window::openShortcutWindow() {
 	shortcutView->show();
 }
 
-void Window::openGamePakWindow() {
-	GamePakView* gamePakWindow = new GamePakView(m_controller);
-	connect(this, SIGNAL(shutdown()), gamePakWindow, SLOT(close()));
-	gamePakWindow->setAttribute(Qt::WA_DeleteOnClose);
-	gamePakWindow->show();
+void Window::openOverrideWindow() {
+	OverrideView* overrideWindow = new OverrideView(m_controller, m_config);
+	connect(this, SIGNAL(shutdown()), overrideWindow, SLOT(close()));
+	overrideWindow->setAttribute(Qt::WA_DeleteOnClose);
+	overrideWindow->show();
+}
+
+void Window::openSensorWindow() {
+	SensorView* sensorWindow = new SensorView(m_controller);
+	connect(this, SIGNAL(shutdown()), sensorWindow, SLOT(close()));
+	sensorWindow->setAttribute(Qt::WA_DeleteOnClose);
+	sensorWindow->show();
+}
+
+void Window::openCheatsWindow() {
+	CheatsView* cheatsWindow = new CheatsView(m_controller);
+	connect(this, SIGNAL(shutdown()), cheatsWindow, SLOT(close()));
+	cheatsWindow->setAttribute(Qt::WA_DeleteOnClose);
+	cheatsWindow->show();
 }
 
 #ifdef BUILD_SDL
@@ -270,6 +296,8 @@ void Window::gdbOpen() {
 		m_gdbController = new GDBController(m_controller, this);
 	}
 	GDBWindow* window = new GDBWindow(m_gdbController);
+	connect(this, SIGNAL(shutdown()), window, SLOT(close()));
+	window->setAttribute(Qt::WA_DeleteOnClose);
 	window->show();
 }
 #endif
@@ -303,7 +331,6 @@ void Window::keyReleaseEvent(QKeyEvent* event) {
 }
 
 void Window::resizeEvent(QResizeEvent*) {
-	redoLogo();
 	m_config->setOption("height", m_screenWidget->height());
 	m_config->setOption("width", m_screenWidget->width());
 }
@@ -316,6 +343,28 @@ void Window::closeEvent(QCloseEvent* event) {
 void Window::focusOutEvent(QFocusEvent*) {
 	m_controller->setTurbo(false, false);
 	m_controller->clearKeys();
+}
+
+void Window::dragEnterEvent(QDragEnterEvent* event) {
+	if (event->mimeData()->hasFormat("text/uri-list")) {
+		event->acceptProposedAction();
+	}
+}
+
+void Window::dropEvent(QDropEvent* event) {
+	QString uris = event->mimeData()->data("text/uri-list");
+	uris = uris.trimmed();
+	if (uris.contains("\n")) {
+		// Only one file please
+		return;
+	}
+	QUrl url(uris);
+	if (!url.isLocalFile()) {
+		// No remote loading
+		return;
+	}
+	event->accept();
+	m_controller->loadGame(url.path());
 }
 
 void Window::toggleFullScreen() {
@@ -349,7 +398,6 @@ void Window::gameStarted(GBAThread* context) {
 	appendMRU(context->fname);
 	setWindowTitle(tr(PROJECT_NAME " - %1").arg(title));
 	attachWidget(m_display);
-	m_screenWidget->setScaledContents(true);
 
 #ifndef Q_OS_MAC
 	if(isFullScreen()) {
@@ -366,8 +414,8 @@ void Window::gameStopped() {
 	}
 	setWindowTitle(tr(PROJECT_NAME));
 	detachWidget(m_display);
-	m_screenWidget->setScaledContents(false);
-	redoLogo();
+	m_screenWidget->setLockAspectRatio(m_logo.width(), m_logo.height());
+	m_screenWidget->setPixmap(m_logo);
 
 	m_fpsTimer.stop();
 }
@@ -380,13 +428,12 @@ void Window::gameCrashed(const QString& errorMessage) {
 	crash->show();
 }
 
-void Window::redoLogo() {
-	if (m_controller->isLoaded()) {
-		return;
-	}
-	QPixmap logo(m_logo.scaled(m_screenWidget->size() * m_screenWidget->devicePixelRatio(), Qt::KeepAspectRatio, Qt::SmoothTransformation));
-	logo.setDevicePixelRatio(m_screenWidget->devicePixelRatio());
-	m_screenWidget->setPixmap(logo);
+void Window::gameFailed() {
+	QMessageBox* fail = new QMessageBox(QMessageBox::Warning, tr("Couldn't Load"),
+		tr("Could not load game. Are you sure it's in the correct format?"),
+		QMessageBox::Ok, this,  Qt::Sheet);
+	fail->setAttribute(Qt::WA_DeleteOnClose);
+	fail->show();
 }
 
 void Window::recordFrame() {
@@ -397,11 +444,15 @@ void Window::recordFrame() {
 }
 
 void Window::showFPS() {
+	char title[13] = { '\0' };
+	GBAGetGameTitle(m_controller->thread()->gba, title);
+	if (m_frameList.isEmpty()) {
+		setWindowTitle(tr(PROJECT_NAME " - %1").arg(title));
+		return;
+	}
 	qint64 interval = m_frameList.first().msecsTo(m_frameList.last());
 	float fps = (m_frameList.count() - 1) * 10000.f / interval;
 	fps = round(fps) / 10.f;
-	char title[13] = { '\0' };
-	GBAGetGameTitle(m_controller->thread()->gba, title);
 	setWindowTitle(tr(PROJECT_NAME " - %1 (%2 fps)").arg(title).arg(fps));
 }
 
@@ -502,6 +553,7 @@ void Window::setupMenu(QMenuBar* menubar) {
 		QPixmap pixmap;
 		pixmap.convertFromImage(currentImage.rgbSwapped());
 		m_screenWidget->setPixmap(pixmap);
+		m_screenWidget->setLockAspectRatio(3, 2);
 	});
 	connect(m_controller, &GameController::gameUnpaused, [pause]() { pause->setChecked(false); });
 	m_gameActions.append(pause);
@@ -628,15 +680,40 @@ void Window::setupMenu(QMenuBar* menubar) {
 	connect(viewLogs, SIGNAL(triggered()), m_logView, SLOT(show()));
 	addControlledAction(toolsMenu, viewLogs, "viewLogs");
 
-	QAction* gamePak = new QAction(tr("Game &Pak overrides..."), toolsMenu);
-	connect(gamePak, SIGNAL(triggered()), this, SLOT(openGamePakWindow()));
-	addControlledAction(toolsMenu, gamePak, "gamePakOverrides");
+	QAction* overrides = new QAction(tr("Game &overrides..."), toolsMenu);
+	connect(overrides, SIGNAL(triggered()), this, SLOT(openOverrideWindow()));
+	addControlledAction(toolsMenu, overrides, "overrideWindow");
+
+	QAction* sensors = new QAction(tr("Game &Pak sensors..."), toolsMenu);
+	connect(sensors, SIGNAL(triggered()), this, SLOT(openSensorWindow()));
+	addControlledAction(toolsMenu, sensors, "sensorWindow");
+
+	QAction* cheats = new QAction(tr("&Cheats..."), toolsMenu);
+	connect(cheats, SIGNAL(triggered()), this, SLOT(openCheatsWindow()));
+	addControlledAction(toolsMenu, cheats, "cheatsWindow");
 
 #ifdef USE_GDB_STUB
 	QAction* gdbWindow = new QAction(tr("Start &GDB server..."), toolsMenu);
 	connect(gdbWindow, SIGNAL(triggered()), this, SLOT(gdbOpen()));
 	addControlledAction(toolsMenu, gdbWindow, "gdbWindow");
 #endif
+
+	toolsMenu->addSeparator();
+	QAction* solarIncrease = new QAction(tr("Increase solar level"), toolsMenu);
+	connect(solarIncrease, SIGNAL(triggered()), m_controller, SLOT(increaseLuminanceLevel()));
+	addControlledAction(toolsMenu, solarIncrease, "increaseLuminanceLevel");
+
+	QAction* solarDecrease = new QAction(tr("Decrease solar level"), toolsMenu);
+	connect(solarDecrease, SIGNAL(triggered()), m_controller, SLOT(decreaseLuminanceLevel()));
+	addControlledAction(toolsMenu, solarDecrease, "decreaseLuminanceLevel");
+
+	QAction* maxSolar = new QAction(tr("Brightest solar level"), toolsMenu);
+	connect(maxSolar, &QAction::triggered, [this]() { m_controller->setLuminanceLevel(10); });
+	addControlledAction(toolsMenu, maxSolar, "maxLuminanceLevel");
+
+	QAction* minSolar = new QAction(tr("Darkest solar level"), toolsMenu);
+	connect(minSolar, &QAction::triggered, [this]() { m_controller->setLuminanceLevel(0); });
+	addControlledAction(toolsMenu, minSolar, "minLuminanceLevel");
 
 	toolsMenu->addSeparator();
 	addControlledAction(toolsMenu, toolsMenu->addAction(tr("Settings..."), this, SLOT(openSettingsWindow())), "settings");
@@ -729,10 +806,6 @@ WindowBackground::WindowBackground(QWidget* parent)
 	setLayout(new QStackedLayout());
 	layout()->setContentsMargins(0, 0, 0, 0);
 	setAlignment(Qt::AlignCenter);
-	QPalette p = palette();
-	p.setColor(backgroundRole(), Qt::black);
-	setPalette(p);
-	setAutoFillBackground(true);
 }
 
 void WindowBackground::setSizeHint(const QSize& hint) {
@@ -741,4 +814,29 @@ void WindowBackground::setSizeHint(const QSize& hint) {
 
 QSize WindowBackground::sizeHint() const {
 	return m_sizeHint;
+}
+
+void WindowBackground::setLockAspectRatio(int width, int height) {
+	m_aspectWidth = width;
+	m_aspectHeight = height;
+}
+
+void WindowBackground::paintEvent(QPaintEvent*) {
+	QPainter painter(this);
+	painter.setRenderHint(QPainter::SmoothPixmapTransform);
+	const QPixmap* logo = pixmap();
+	painter.fillRect(QRect(QPoint(), size()), Qt::black);
+	if (!logo) {
+		return;
+	}
+	QSize s = size();
+	QSize ds = s;
+	if (s.width() * m_aspectHeight > s.height() * m_aspectWidth) {
+		ds.setWidth(s.height() * m_aspectWidth / m_aspectHeight);
+	} else if (s.width() * m_aspectHeight < s.height() * m_aspectWidth) {
+		ds.setHeight(s.width() * m_aspectHeight / m_aspectWidth);
+	}
+	QPoint origin = QPoint((s.width() - ds.width()) / 2, (s.height() - ds.height()) / 2);
+	QRect full(origin, ds);
+	painter.drawPixmap(full, *logo);
 }

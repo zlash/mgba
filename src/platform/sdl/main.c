@@ -1,4 +1,4 @@
-/* Copyright (c) 2013-2014 Jeffrey Pfau
+/* Copyright (c) 2013-2015 Jeffrey Pfau
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -13,11 +13,11 @@
 #include "debugger/gdb-stub.h"
 #endif
 
-#include "gba-thread.h"
-#include "gba.h"
-#include "gba-config.h"
-#include "gba-video.h"
-#include "sio/sio-mesh.h"
+#include "gba/gba.h"
+#include "gba/sio/sio-mesh.h"
+#include "gba/supervisor/config.h"
+#include "gba/supervisor/thread.h"
+#include "gba/video.h"
 #include "platform/commandline.h"
 #include "util/configuration.h"
 
@@ -54,8 +54,8 @@ int main(int argc, char** argv) {
 	};
 	GBAConfigLoadDefaults(&config, &opts);
 
-	struct GBAArguments args = {};
-	struct GraphicsOpts graphicsOpts = {};
+	struct GBAArguments args;
+	struct GraphicsOpts graphicsOpts;
 
 	struct SubParser subparser;
 
@@ -119,14 +119,20 @@ int main(int argc, char** argv) {
 	renderer.events.bindings = &inputMap;
 	GBASDLInitBindings(&inputMap);
 	GBASDLInitEvents(&renderer.events);
-	GBASDLEventsLoadConfig(&renderer.events, &config.configTable); // TODO: Don't use this directly
+	GBASDLEventsLoadConfig(&renderer.events, GBAConfigGetInput(&config));
+	context.overrides = GBAConfigGetOverrides(&config);
 
-	GBAThreadStart(&context);
+	int didFail = 0;
+	if (GBAThreadStart(&context)) {
+		GBASDLRunloop(&context, &renderer);
+		GBAThreadJoin(&context);
+	} else {
+		didFail = 1;
+		printf("Could not run game. Are you sure the file exists and is a Game Boy Advance game?\n");
+	}
 
-	GBASDLRunloop(&context, &renderer);
-
-	GBAThreadJoin(&context);
 	if (GBAThreadHasCrashed(&context)) {
+		didFail = 1;
 		printf("The game crashed!\n");
 	}
 	freeArguments(&args);
@@ -137,7 +143,7 @@ int main(int argc, char** argv) {
 
 	_GBASDLDeinit(&renderer);
 
-	return 0;
+	return didFail;
 }
 
 static bool _GBASDLInit(struct SDLSoftwareRenderer* renderer) {
