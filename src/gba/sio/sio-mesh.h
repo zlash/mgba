@@ -56,6 +56,7 @@ struct GBASIOMultiMeshNode {
 	int transferActive;
 	uint16_t transferValues[MAX_GBAS];
 	int32_t transferTime;
+	int32_t transferStart;
 
 	// These must be protected by the mutex
 	int32_t nextEvent;

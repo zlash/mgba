@@ -147,6 +147,8 @@ bool GBASIOMultiMeshInit(struct GBASIODriver* driver) {
 	node->transferValues[2] = 0xFFFF;
 	node->transferValues[3] = 0xFFFF;
 	node->transferTime = 0;
+	node->transferStart = 0;
+	node->linkCycles = 0;
 	return !ThreadCreate(&node->networkThread, _networkThread, node);
 }
 
@@ -215,7 +217,6 @@ int32_t GBASIOMultiMeshProcessEvents(struct GBASIODriver* driver, int32_t cycles
 			}
 			if (node->transferState == TRANSFER_FINISHED) {
 				_finishTransfer(node);
-				node->nextEvent = INT_MAX;
 			}
 		}
 	}
@@ -247,8 +248,8 @@ static void _startTransfer(struct GBASIOMultiMeshNode* node) {
 		SocketSend(node->mesh[i], &transfer, sizeof(transfer));
 	}
 	MutexLock(&node->lock);
-	node->linkCycles = 0;
 	node->transferState = TRANSFER_SENT_DATA;
+	node->transferStart = node->linkCycles;
 	ConditionWake(&node->dataNetworkCond);
 	MutexUnlock(&node->lock);
 
@@ -386,8 +387,8 @@ static void _processTransferStart(struct GBASIOMultiMeshNode* node, struct Packe
 	GBALog(node->d.p->p, GBA_LOG_SIO, "Sync packet: %i -> %i (%i)", node->linkCycles, start->sync, node->linkCycles - start->sync);
 
 	MutexLock(&node->lock);
-	node->linkCycles -= start->sync;
-	node->transferTime += node->linkCycles;
+	node->linkCycles = start->sync;
+	node->transferStart = start->sync - node->transferTime; // This is probably wrong, but timing is hard
 	node->transferState = TRANSFER_GOT_START;
 	node->nextEvent = 0;
 	node->d.p->p->cpu->nextEvent = 0;
@@ -412,12 +413,13 @@ static void _processTransferData(struct GBASIOMultiMeshNode* node, struct Packet
 
 		MutexLock(&node->lock);
 		node->transferState = TRANSFER_FINISHED;
-		node->nextEvent = node->transferTime - node->linkCycles;
+		node->nextEvent = node->transferStart + node->transferTime - node->linkCycles;
+		node->linkCycles = -node->nextEvent;
 		node->d.p->p->cpu->nextEvent = 0;
 		ConditionWake(&node->dataNetworkCond);
 		MutexUnlock(&node->lock);
 
-		GBALog(node->d.p->p, GBA_LOG_SIO, "Transfer ended, %i cycles remaining", node->transferTime - node->linkCycles);
+		GBALog(node->d.p->p, GBA_LOG_SIO, "Transfer ended, %i cycles remaining", -node->linkCycles);
 	}
 }
 
