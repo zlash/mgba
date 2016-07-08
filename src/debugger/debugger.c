@@ -11,6 +11,10 @@
 #include "debugger/cli-debugger.h"
 #endif
 
+#ifdef USE_UDS_DEBUGGER
+#include "debugger/uds-debugger.h"
+#endif
+
 #ifdef USE_GDB_STUB
 #include "debugger/gdb-stub.h"
 #endif
@@ -32,6 +36,9 @@ struct mDebugger* mDebuggerCreate(enum mDebuggerType type, struct mCore* core) {
 #ifdef USE_CLI_DEBUGGER
 		struct CLIDebugger cli;
 #endif
+#ifdef USE_UDS_DEBUGGER
+		struct UDSDebugger uds;
+#endif
 #ifdef USE_GDB_STUB
 		struct GDBStub gdb;
 #endif
@@ -45,6 +52,11 @@ struct mDebugger* mDebuggerCreate(enum mDebuggerType type, struct mCore* core) {
 		CLIDebuggerCreate(&debugger->cli);
 		struct CLIDebuggerSystem* sys = core->cliDebuggerSystem(core);
 		CLIDebuggerAttachSystem(&debugger->cli, sys);
+		break;
+#endif
+#ifdef USE_UDS_STUB
+	case DEBUGGER_UDS:
+		UDSDebuggerCreate(&debugger->uds);		
 		break;
 #endif
 #ifdef USE_GDB_STUB

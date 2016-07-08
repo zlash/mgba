@@ -21,6 +21,9 @@ enum mDebuggerType {
 #ifdef USE_CLI_DEBUGGER
 	DEBUGGER_CLI,
 #endif
+#ifdef USE_UDS_DEBUGGER
+	DEBUGGER_UDS,
+#endif
 #ifdef USE_GDB_STUB
 	DEBUGGER_GDB,
 #endif

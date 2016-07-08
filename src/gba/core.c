@@ -385,6 +385,10 @@ static bool _GBACoreSupportsDebuggerType(struct mCore* core, enum mDebuggerType 
 	case DEBUGGER_CLI:
 		return true;
 #endif
+#ifdef USE_UDS_DEBUGGER
+	case DEBUGGER_UDS:
+		return true;
+#endif
 #ifdef USE_GDB_STUB
 	case DEBUGGER_GDB:
 		return true;

@@ -9,6 +9,10 @@
 #include "debugger/cli-debugger.h"
 #endif
 
+#ifdef USE_UDS_DEBUGGER
+#include "debugger/uds-debugger.h"
+#endif
+
 #ifdef USE_GDB_STUB
 #include "debugger/gdb-stub.h"
 #endif
@@ -161,6 +165,11 @@ int mSDLRun(struct mSDLRenderer* renderer, struct mArguments* args) {
 	mCoreAutoloadSave(renderer->core);
 	struct mDebugger* debugger = mDebuggerCreate(args->debuggerType, renderer->core);
 	if (debugger) {
+#ifdef USE_UDS_DEBUGGER
+		if (args->udsSocketPath) {
+			((struct UDSDebugger*) debugger)->path = args.udsSocketPath;
+		}
+#endif
 		mDebuggerAttach(debugger, renderer->core);
 		mDebuggerEnter(debugger, DEBUGGER_ENTER_MANUAL, NULL);
 	}

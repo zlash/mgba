@@ -23,6 +23,10 @@ struct mArguments {
 	bool debugAtStart;
 	bool showHelp;
 	bool showVersion;
+	
+#ifdef USE_UDS_DEBUGGER
+	char *udsSocketPath;
+#endif
 };
 
 struct mCoreConfig;
