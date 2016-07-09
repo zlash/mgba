@@ -54,7 +54,7 @@ struct mDebugger* mDebuggerCreate(enum mDebuggerType type, struct mCore* core) {
 		CLIDebuggerAttachSystem(&debugger->cli, sys);
 		break;
 #endif
-#ifdef USE_UDS_STUB
+#ifdef USE_UDS_DEBUGGER
 	case DEBUGGER_UDS:
 		UDSDebuggerCreate(&debugger->uds);		
 		break;

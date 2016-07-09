@@ -10,8 +10,7 @@
 #ifdef USE_UDS_DEBUGGER
 
 #include "util/common.h"
-#include <sys/socket.h>
-#include <sys/un.h>
+#include "debugger/debugger.h"
 
 struct UDSDebugger {
 	struct mDebugger d;

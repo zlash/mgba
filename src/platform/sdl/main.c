@@ -167,7 +167,7 @@ int mSDLRun(struct mSDLRenderer* renderer, struct mArguments* args) {
 	if (debugger) {
 #ifdef USE_UDS_DEBUGGER
 		if (args->udsSocketPath) {
-			((struct UDSDebugger*) debugger)->path = args.udsSocketPath;
+			((struct UDSDebugger*) debugger)->path = args->udsSocketPath;
 		}
 #endif
 		mDebuggerAttach(debugger, renderer->core);

@@ -35,7 +35,7 @@ static const struct option _options[] = {
 	{ "debug",     no_argument, 0, 'd' },
 #endif
 #ifdef USE_UDS_DEBUGGER
-	{ "uds-debugger",optional_argument, 0, 'u' },
+	{ "uds-debugger",required_argument, 0, 'u' },
 #endif
 #ifdef USE_GDB_STUB
 	{ "gdb",       no_argument, 0, 'g' },
@@ -58,7 +58,7 @@ bool parseArguments(struct mArguments* args, int argc, char* const* argv, struct
 		"d"
 #endif
 #ifdef USE_UDS_DEBUGGER
-		"u"
+		"u:"
 #endif
 #ifdef USE_GDB_STUB
 		"g"
@@ -231,7 +231,7 @@ void usage(const char* arg0, const char* extraOptions) {
 	puts("  -d, --debug         Use command-line debugger");
 #endif
 #ifdef USE_UDS_DEBUGGER
-	puts("  -u, --uds-debugger [SOCKET_PATH]  Use Unix Domain Socket debugger");
+	puts("  -u, --uds-debugger SOCKET_PATH  Use Unix Domain Socket debugger");
 #endif
 #ifdef USE_GDB_STUB
 	puts("  -g, --gdb           Start GDB session (default port 2345)");
