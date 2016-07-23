@@ -86,7 +86,6 @@ static bool _clientWrite(struct UDSDebugger* udsd, uint8_t *buffer, size_t count
 }
 
 
-
 /*
 
 COMMANDS (LITTLE ENDIAN):
@@ -120,9 +119,10 @@ static void _udsdPaused(struct mDebugger* debugger) {
         _awaitForConnectionIfNeeded(udsd);
         if (_clientRead(udsd,stackBuffer,1)) {
             switch (stackBuffer[0]) {
-                case 'C':
-                    udsd->d.state = DEBUGGER_RUNNING;
-                return;
+            case 'C': // - Continue execution
+                udsd->d.state = DEBUGGER_RUNNING;
+                _clientWrite(udsd,"K",1);
+            return;
             }
         }
     }
