@@ -7,10 +7,15 @@
 
 #ifdef USE_UDS_DEBUGGER
 
-#include "uds-debugger.h"
-#include "core/core.h"
 #include <sys/socket.h>
 #include <sys/un.h>
+
+#include "uds-debugger.h"
+
+#include "gba/memory.h"
+#include "core/thread.h"
+#include "core/serialize.h"
+#include "core/core.h"
 
 static void _udsdInit(struct mDebugger* debugger) {
     struct UDSDebugger* udsd = (struct UDSDebugger*) debugger;
@@ -102,6 +107,11 @@ t u32 - Remove watchpoint on address $1
 X u32 - Set execution watchpoint on address $1
 x u32 - Remove execution watchpoint on address $1
 
+E - Emulator commands namespace:
+
+    E L u8 - Load savestate #$1
+    E S u8 - Save savestate #$1 
+
 SERVER MESSAGES:
 
 H BT u32 - A halt ocurred in the program at address $2, caused by (B)reakpoint or wa(T)chpoint
@@ -121,8 +131,51 @@ static void _udsdPaused(struct mDebugger* debugger) {
             switch (stackBuffer[0]) {
             case 'C': // - Continue execution
                 udsd->d.state = DEBUGGER_RUNNING;
-                _clientWrite(udsd,"K",1);
             return;
+            case 'W': // -Write $2 ammount of bytes to $1
+                if (_clientRead(udsd,stackBuffer,8)) {
+                    uint32_t dst = ((uint32_t *)stackBuffer)[0];
+                    uint32_t nBytes = ((uint32_t *)stackBuffer)[1];
+                    uint8_t *tmpBuffer = stackBuffer;
+                    uint32_t i;
+
+                    printf("Requested Patch %X at %X\n",nBytes,dst);
+
+                    if(nBytes>0xFF) {
+                        tmpBuffer = malloc(nBytes);
+                    }
+
+                    if (_clientRead(udsd,tmpBuffer,nBytes)) {
+
+
+                        for(i=0;i<nBytes;++i) {
+                            GBAPatch8(udsd->d.core->cpu, dst + i, tmpBuffer[i], 0);
+                        }                        
+                    }
+
+                    if(tmpBuffer!=stackBuffer) {
+                        free(tmpBuffer);
+                    }                    
+                }
+            return;
+            case 'E': // - Emulator commands namespace
+                if (_clientRead(udsd,stackBuffer,1)) {
+                    switch (stackBuffer[0]) {
+                        case 'L':
+                        case 'S':                        
+                            if(_clientRead(udsd,&stackBuffer[1],1)) {                                
+                                if(stackBuffer[1] >=1 && stackBuffer[1] <= 9) {
+                                    if(stackBuffer[0]=='L') {
+                                        mCoreLoadState(udsd->d.core, stackBuffer[1], SAVESTATE_SCREENSHOT);
+                                    } else {
+                                        mCoreSaveState(udsd->d.core, stackBuffer[1], SAVESTATE_SCREENSHOT);
+                                    }
+                                }					            
+                            }
+                        break;
+                    }
+                }
+            break;
             }
         }
     }
